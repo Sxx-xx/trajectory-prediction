@@ -142,40 +142,59 @@ obs, fut, origin = ds[0]   # [8, 2], [12, 2], [2]
 - **인코더**: 변위 → `Linear(2, 64) + ReLU` → `LSTM(64, 128)`. 마지막 상태 `(h, c)`를 디코더에 넘긴다.
 - **디코더(autoregressive)**: `LSTMCell(64, 128)`을 12번 돌린다. 스텝마다 `Linear(128, 2)`로 다음 변위를 내고, 그 **자기 예측**을 다음 스텝 입력으로 넣는다. 첫 입력은 마지막 관측 변위다. 학습 때도 정답을 넣지 않는다(teacher forcing 없음).
 - **위치**: 마지막 관측점 + 예측 변위의 누적합.
-- **학습**: 손실은 예측 위치의 MSE. Adam(lr 1e-3), 배치 64, 기울기 노름 1.0으로 자르기, 시드 0. 데이터 증강(회전 등)은 쓰지 않았다.
-- **검증 · early stopping**: `data/raw/<scene>/val`(test 장면을 뺀 4개 장면의 검증 구간)에서 에폭마다 ADE를 잰다. 20 에폭 동안 좋아지지 않으면 멈추고, val ADE가 가장 낮았던 모델을 `checkpoints/lstm_<scene>.pt`에 저장한다. test 분할은 학습과 모델 선택에 쓰지 않고, 저장한 best 모델로 마지막에 한 번만 평가한다.
+- **학습**: 손실은 예측 위치의 MSE. Adam(lr 1e-3), 배치 64, 기울기 노름 1.0으로 자르기.
+- **회전 증강**(`--augment rotate`): 학습 배치마다 샘플별로 0~360° 무작위 각도를 뽑아 관측 · 미래 궤적을 함께 돌린다. 중심은 마지막 관측점(원점)이다. 걷는 방향만 바뀌고 속도 · 곡률은 그대로다. val과 test에는 적용하지 않는다.
+- **검증 · early stopping**: `data/raw/<scene>/val`(test 장면을 뺀 4개 장면의 검증 구간)에서 에폭마다 ADE를 잰다. 20 에폭 동안 좋아지지 않으면 멈추고, val ADE가 가장 낮았던 모델을 `checkpoints/lstm_<augment>_seed<seed>_<scene>.pt`에 저장한다. test 분할은 학습과 모델 선택에 쓰지 않고, 저장한 best 모델로 마지막에 한 번만 평가한다.
 
 ```bash
-.venv/bin/python scripts/train_lstm.py   # -> results/lstm.csv, lstm_history.csv, lstm_curves.png, checkpoints/
+for seed in 0 1 2; do
+  .venv/bin/python scripts/train_lstm.py --augment none   --seed $seed
+  .venv/bin/python scripts/train_lstm.py --augment rotate --seed $seed
+done                                          # -> results/lstm/<augment>_seed<seed>{.csv,_history.csv,_curves.png}
+.venv/bin/python scripts/summarize_lstm.py   # -> results/lstm/summary.csv, 아래 표
 ```
 
-RTX 4070 Laptop에서 에폭당 약 2.5 s, 5개 분할 전체가 약 7분 걸렸다. 아래는 그 한 번(시드 0)의 실행값이다. GPU 연산의 비결정성 때문에 다시 돌리면 소수 셋째 자리가 조금 달라질 수 있다. 시드를 바꾼 반복 실험은 하지 않았다.
+RTX 4070 Laptop에서 한 실행(5개 분할)은 혼자 돌리면 약 7분 걸린다. 6개 실행을 3개씩 동시에 돌렸다. 증강 없음 · 시드 0은 이전에 따로 돌린 결과와 소수 넷째 자리까지 같았다. 이 환경에서는 같은 시드면 같은 결과가 나온다.
 
-| 장면 | test 샘플 | best epoch | 등속 ADE | 등속 FDE | LSTM ADE | LSTM FDE |
-| :--- | --: | --: | --: | --: | --: | --: |
-| eth | 181 | 21 | 0.995 | 2.234 | **0.933** | **1.936** |
-| hotel | 1,053 | 16 | **0.323** | **0.617** | 0.566 | 1.166 |
-| univ | 24,334 | 32 | **0.524** | 1.165 | 0.537 | **1.164** |
-| zara1 | 2,253 | 24 | **0.431** | **0.960** | 0.440 | 0.962 |
-| zara2 | 5,833 | 26 | **0.326** | 0.729 | 0.336 | 0.729 |
-| **AVG** | | | **0.520** | **1.141** | 0.562 | 1.192 |
+### 결과: 증강 없음 vs 회전 증강 (시드 0, 1, 2)
 
-(단위 m, 굵은 글씨는 장면별로 더 작은 값)
+LSTM 값은 시드 3개의 평균 ± 표본 표준편차다. 등속 모델은 결정적이라 한 값이다. 단위는 m이고, 굵은 글씨는 장면마다 평균이 가장 작은 값이다.
 
-![LSTM 학습 곡선](results/lstm_curves.png)
+| 장면 | 등속 ADE | 등속 FDE | LSTM 증강 없음 ADE | FDE | LSTM 회전 증강 ADE | FDE |
+| :--- | :-: | :-: | :-: | :-: | :-: | :-: |
+| eth | 0.995 | 2.234 | 0.944 ± 0.010 | 1.949 ± 0.046 | **0.918 ± 0.015** | **1.921 ± 0.055** |
+| hotel | **0.323** | **0.617** | 0.565 ± 0.004 | 1.152 ± 0.013 | 0.418 ± 0.006 | 0.806 ± 0.019 |
+| univ | 0.524 | 1.165 | 0.545 ± 0.010 | 1.184 ± 0.021 | **0.514 ± 0.004** | **1.127 ± 0.010** |
+| zara1 | **0.431** | 0.960 | 0.437 ± 0.022 | **0.957 ± 0.051** | 0.456 ± 0.005 | 1.021 ± 0.013 |
+| zara2 | **0.326** | **0.729** | 0.347 ± 0.010 | 0.769 ± 0.036 | 0.335 ± 0.008 | 0.740 ± 0.016 |
+| **AVG** | **0.520** | 1.141 | 0.568 ± 0.005 | 1.202 ± 0.017 | 0.528 ± 0.002 | **1.123 ± 0.019** |
 
-- **평균으로는 LSTM이 등속 모델보다 나쁘다.** eth에서만 확실히 낫고, univ · zara1 · zara2는 거의 같으며, hotel에서 크게 진다. Schöller et al.이 지적한 "단순 등속 모델이 학습형 모델과 맞먹는다"는 현상이 이 실험에서도 나타난다.
-- **학습 곡선**: 다섯 분할 모두 val loss가 10~30 에폭 근처에서 평평해지고, 그 뒤로는 train loss만 내려간다(과적합 시작). univ 분할(학습 샘플 9,231개로 가장 적다)에서 train과 val의 간격이 가장 크다.
+AVG의 LSTM 값은 시드마다 5개 장면 평균을 먼저 구한 뒤 그 평균 ± 표준편차다. 시드별 값은 `results/lstm/<augment>_seed<seed>.csv`, 모은 표는 `results/lstm/summary.csv`에 있다.
 
-### hotel에서 LSTM이 지는 이유: 진행 방향 편향
+![LSTM 학습 곡선 (회전 증강, 시드 0)](results/lstm/rotate_seed0_curves.png)
+
+다른 조건 · 시드의 학습 곡선은 `results/lstm/*_curves.png`에 있다.
+
+- **회전 증강은 평균 ADE를 0.568에서 0.528로 줄였다.** 개선의 대부분은 hotel(0.565 → 0.418)에서 왔다. eth · univ · zara2도 조금 좋아졌고, zara1은 0.437에서 0.456으로 나빠졌다.
+- **평균 ADE는 여전히 등속 모델(0.520)이 가장 낮다.** 평균 FDE는 회전 증강 LSTM이 1.123 ± 0.019로 등속 모델(1.141)보다 낮지만, 차이가 시드 간 표준편차 정도라 이긴다고 말하기 어렵다.
+- **장면별로는 eth · univ에서 회전 증강 LSTM이 등속 모델보다 낫다.** 차이가 시드 간 표준편차보다 크다. zara2는 비슷하고, zara1 · hotel은 등속 모델이 낫다.
+- **val ADE는 오히려 나빠졌다.** 다섯 분할 모두에서 best val ADE가 회전 증강 쪽이 크다(예: eth 0.426~0.430 → 0.440~0.444). val은 train과 같은 4개 장면이라 진행 방향 분포도 train과 같다. 회전 증강은 그 방향에 맞추는 이점을 버리는 대신 다른 장면에 일반화하는 쪽을 택한다. early stopping 기준(val)과 평가 장면(test)의 방향 분포가 다르다는 점은 leave-one-out 설정의 한계로 남는다.
+- **학습 곡선**: 증강 없음은 val loss가 10~30 에폭 근처에서 평평해진 뒤 train loss만 계속 내려간다(과적합). 회전 증강은 train loss가 val loss 근처에 머문다. 마지막 에폭의 val loss / train loss 비는 증강 없음 1.01~1.31, 회전 증강 0.93~1.02다(5개 분할 × 시드 3개 범위).
+
+### hotel: 진행 방향 편향과 회전 증강
 
 `scripts/diag_lstm_direction.py`로 확인했다.
 
 1. **진행 방향 분포가 다르다.** 20스텝 동안 1 m 이상 움직인 보행자 가운데 x 방향 이동이 더 큰 비율은 hotel 분할의 train(나머지 4개 장면)에서 76%(22,859명 중), hotel test에서 6%(444명 중)다. hotel 보행자는 대부분 y 방향으로 걷는데, 학습 데이터에는 x 방향이 많다.
-2. **입력을 돌리면 오차가 줄어든다.** 학습한 hotel 모델에 test 입력을 90° 단위로 돌려 넣고 예측을 되돌리면 ADE가 0° 0.566, 90° 0.367, 180° 0.584, 270° 0.370이다. 학습 때 많이 본 방향(x)으로 돌려 주면 오차가 크게 준다. 즉 모델이 좌표축 방향에 맞춰져 있다. 비교로 eth(test의 98%가 x 방향)는 돌리지 않은 0°가 0.933으로 가장 좋다.
+2. **증강 없는 모델은 좌표축 방향에 맞춰져 있다.** 학습한 hotel 모델(증강 없음, 시드 0)에 test 입력을 90° 단위로 돌려 넣고 예측을 되돌리면 ADE가 0° 0.566, 90° 0.367, 180° 0.584, 270° 0.370이다. 학습 때 많이 본 방향(x)으로 돌려 주면 오차가 크게 준다.
+3. **회전 증강 모델은 방향에 덜 민감하다.** 같은 시험을 회전 증강(시드 0) 모델에 하면 0° 0.415, 90° 0.387, 180° 0.409, 270° 0.377이다. 각도에 따른 차이(최대 − 최소)가 0.22에서 0.04로 줄었다.
 
-등속 모델은 회전과 무관해서 이 문제가 없다. 학습 때 궤적을 무작위로 회전하는 증강을 넣으면 줄어들 것으로 예상하지만 아직 실험하지 않았다. 위 회전 시험은 원인 확인용이고, 표의 LSTM 수치에는 쓰지 않았다.
+정리하면 다음과 같다.
 
+- **회전 증강은 hotel에서 효과가 있었다.** ADE 0.565 ± 0.004 → 0.418 ± 0.006, FDE 1.152 ± 0.013 → 0.806 ± 0.019. 시드 3개 모두에서 같은 방향으로, 시드 간 편차보다 훨씬 크게 줄었다.
+- **그래도 등속 모델(ADE 0.323, FDE 0.617)을 이기지 못했다.** 시드 3개 모두 지고, ADE 차이는 약 0.10 m다. 방향 편향으로는 남은 차이를 설명할 수 없다. 원인은 아직 확인하지 못했다.
+
+## 코드 구조
 ## 코드 구조
 
 ```
@@ -183,7 +202,8 @@ scripts/
   download_data.sh     데이터 받기 (커밋 고정)
   check_gpu.py         CUDA 확인
   eval_cv.py           등속 모델 평가, 표 · 그림 저장
-  train_lstm.py        LSTM 학습 (leave-one-out 5개), early stopping, test 평가, 표 · 학습 곡선 저장
+  train_lstm.py        LSTM 학습 (leave-one-out 5개, --augment none|rotate, --seed), early stopping, test 평가
+  summarize_lstm.py    시드별 결과 -> 평균 ± 표준편차 표
   diag_lstm_direction.py  LSTM 진행 방향 편향 진단 (hotel)
 src/trajpred/
   data.py              파일 읽기, 8 -> 12 윈도우 데이터셋, leave-one-out 분할
@@ -193,6 +213,6 @@ src/trajpred/
     lstm.py            Vanilla LSTM encoder-decoder (autoregressive)
 results/
   cv.csv, cv_examples.png
-  lstm.csv, lstm_history.csv, lstm_curves.png
+  lstm/                <augment>_seed<seed>.csv, _history.csv, _curves.png, summary.csv
 checkpoints/           best 모델 (git 에 넣지 않는다)
 ```

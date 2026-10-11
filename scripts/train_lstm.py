@@ -4,16 +4,18 @@
     1. data/raw/<scene>/train 으로 학습, data/raw/<scene>/val 로 검증
        (둘 다 <scene> 을 뺀 나머지 4개 장면이다. test 장면은 학습에 전혀 쓰지 않는다)
     2. 에폭마다 val ADE 를 재서 가장 좋았던 모델을 저장한다 (early stopping)
+       --augment rotate 이면 학습 배치마다 궤적을 무작위 각도로 회전한다 (val, test 는 그대로)
     3. 저장한 best 모델로 data/raw/<scene>/test 에서 ADE/FDE 를 잰다
 
-출력
-    checkpoints/lstm_<scene>.pt   : best 모델 (state_dict 와 설정)
-    results/lstm.csv              : 장면별 test ADE/FDE 와 평균
-    results/lstm_history.csv      : 에폭별 train/val loss, val ADE
-    results/lstm_curves.png       : 장면별 학습 곡선
-    화면                          : 등속 모델(results/cv.csv)과의 비교표
+출력 (<run> = <augment>_seed<seed>, 예: rotate_seed0)
+    checkpoints/lstm_<run>_<scene>.pt   : best 모델 (state_dict 와 설정)
+    results/lstm/<run>.csv              : 장면별 test ADE/FDE 와 평균
+    results/lstm/<run>_history.csv      : 에폭별 train/val loss, val ADE
+    results/lstm/<run>_curves.png       : 장면별 학습 곡선
+    화면                                : 등속 모델(results/cv.csv)과의 비교표
 
-    .venv/bin/python scripts/train_lstm.py
+    .venv/bin/python scripts/train_lstm.py --augment none --seed 0
+    .venv/bin/python scripts/train_lstm.py --augment rotate --seed 0
 """
 
 import argparse
@@ -35,6 +37,21 @@ from trajpred.models import LSTMEncoderDecoder  # noqa: E402
 TRAIN_COLOR = '#2a78d6'    # train loss = 파랑, 실선
 VAL_COLOR = '#eb6834'      # val loss = 주황, 점선
 GRID_COLOR = '#e4e3df'
+
+
+def random_rotate(obs, fut, generator):
+    """샘플마다 0~2π 의 무작위 각도로 관측 · 미래 궤적을 함께 회전한다 (학습 데이터 증강).
+
+    좌표가 마지막 관측점 기준 상대 좌표이므로 그 점을 중심으로 돈다.
+    걷는 방향만 바뀌고 속도 · 곡률 같은 움직임의 모양은 그대로다.
+    obs: [B, 8, 2], fut: [B, 12, 2] -> 같은 shape
+    """
+    theta = torch.rand(obs.shape[0], generator=generator) * 2 * torch.pi    # [B]
+    cos, sin = torch.cos(theta), torch.sin(theta)
+    rot = torch.stack([torch.stack([cos, -sin], -1),
+                       torch.stack([sin, cos], -1)], -2).to(obs.device)    # [B, 2, 2]
+    # 점 p (행 벡터) 를 R p 로 돌린다: p @ R^T
+    return obs @ rot.transpose(1, 2), fut @ rot.transpose(1, 2)
 
 
 def batches(n, batch_size, shuffle, generator=None):
@@ -73,8 +90,11 @@ def train_scene(scene, args, device):
         loss_sum = 0.0
         for idx in batches(len(train_obs), args.batch_size, shuffle=True, generator=generator):
             idx = idx.to(device)
-            pred = model(train_obs[idx])                    # [B, 12, 2]
-            loss = loss_fn(pred, train_fut[idx])
+            obs, fut = train_obs[idx], train_fut[idx]       # [B, 8, 2], [B, 12, 2]
+            if args.augment == 'rotate':
+                obs, fut = random_rotate(obs, fut, generator)
+            pred = model(obs)                               # [B, 12, 2]
+            loss = loss_fn(pred, fut)
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # 순환 신경망의 기울기 폭주 방지
@@ -109,7 +129,7 @@ def load_cv(path):
         return {r['scene']: (float(r['ade_m']), float(r['fde_m'])) for r in csv.DictReader(f)}
 
 
-def plot_curves(history, best_epochs, path):
+def plot_curves(history, best_epochs, path, run):
     fig, axes = plt.subplots(1, len(SCENES), figsize=(3.2 * len(SCENES), 3.4), sharey=True)
     for ax, scene in zip(axes, SCENES):
         rows = [h for h in history if h['scene'] == scene]
@@ -127,7 +147,7 @@ def plot_curves(history, best_epochs, path):
                plt.Line2D([], [], color='#8a8983', lw=1, ls=':')]
     fig.legend(handles, ['train loss', 'val loss', 'best epoch (lowest val ADE)'],
                loc='upper center', ncol=3, frameon=False)
-    fig.supxlabel('epoch', fontsize=10)
+    fig.supxlabel(f'epoch    (run: {run})', fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -136,7 +156,8 @@ def plot_curves(history, best_epochs, path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', default='data/raw')
-    parser.add_argument('--out', default='results')
+    parser.add_argument('--out', default='results/lstm')
+    parser.add_argument('--cv', default='results/cv.csv', help='비교용 등속 모델 결과')
     parser.add_argument('--ckpt', default='checkpoints')
     parser.add_argument('--scenes', nargs='+', default=SCENES)
     parser.add_argument('--embed-dim', type=int, default=64)
@@ -146,10 +167,12 @@ def main():
     parser.add_argument('--max-epochs', type=int, default=200)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--augment', choices=['none', 'rotate'], default='none')
     args = parser.parse_args()
+    run = f'{args.augment}_seed{args.seed}'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('device:', device)
+    print('device:', device, ' run:', run)
     out, ckpt = Path(args.out), Path(args.ckpt)
     out.mkdir(parents=True, exist_ok=True)
     ckpt.mkdir(parents=True, exist_ok=True)
@@ -160,7 +183,7 @@ def main():
         history += scene_history
         best_epochs[scene] = best_epoch
         torch.save({'state_dict': model.state_dict(), 'args': vars(args), 'best_epoch': best_epoch},
-                   ckpt / f'lstm_{scene}.pt')
+                   ckpt / f'lstm_{run}_{scene}.pt')
 
         test = load_split(args.data, scene, 'test', normalize=True)
         pred = predict(model, test.obs.to(device)).cpu()      # [N, 12, 2]
@@ -168,7 +191,7 @@ def main():
                      'ade': ade(pred, test.fut).mean().item(), 'fde': fde(pred, test.fut).mean().item()})
         print(f'[{scene}] test ADE {rows[-1]["ade"]:.3f}  FDE {rows[-1]["fde"]:.3f}')
 
-    with open(out / 'lstm_history.csv', 'w', newline='') as f:
+    with open(out / f'{run}_history.csv', 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['scene', 'epoch', 'train_loss', 'val_loss', 'val_ade'])
         writer.writeheader()
         writer.writerows(history)
@@ -180,19 +203,19 @@ def main():
     average = {'scene': 'AVG', 'samples': '', 'best_epoch': '',
                'ade': sum(r['ade'] for r in rows) / len(rows),
                'fde': sum(r['fde'] for r in rows) / len(rows)}
-    with open(out / 'lstm.csv', 'w', newline='') as f:
+    with open(out / f'{run}.csv', 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['scene', 'samples', 'best_epoch', 'ade_m', 'fde_m'])
         for r in rows + [average]:
             writer.writerow([r['scene'], r['samples'], r['best_epoch'], f"{r['ade']:.4f}", f"{r['fde']:.4f}"])
-    plot_curves(history, best_epochs, out / 'lstm_curves.png')
+    plot_curves(history, best_epochs, out / f'{run}_curves.png', run)
 
-    cv = load_cv(out / 'cv.csv')
+    cv = load_cv(args.cv)
     print(f"\n{'scene':<8}{'CV ADE':>9}{'CV FDE':>9}{'LSTM ADE':>10}{'LSTM FDE':>10}")
     for r in rows + [average]:
         cv_ade, cv_fde = cv[r['scene']]
         print(f"{r['scene']:<8}{cv_ade:>9.3f}{cv_fde:>9.3f}{r['ade']:>10.3f}{r['fde']:>10.3f}")
-    print(f'saved {out / "lstm.csv"}, {out / "lstm_history.csv"}, {out / "lstm_curves.png"}, {ckpt}/')
+    print(f'saved {out}/{run}.csv, {run}_history.csv, {run}_curves.png, {ckpt}/lstm_{run}_*.pt')
 
 
 if __name__ == '__main__':

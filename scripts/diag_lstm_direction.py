@@ -5,8 +5,11 @@
 2. 회전 시험: 학습한 best 모델에 test 입력을 90° 단위로 돌려 넣고, 예측을 되돌려 ADE 를 잰다.
    모델이 특정 진행 방향에 맞춰져 있다면 각도에 따라 ADE 가 달라진다.
 
-    .venv/bin/python scripts/diag_lstm_direction.py   # scripts/train_lstm.py 를 먼저 실행할 것
+    .venv/bin/python scripts/diag_lstm_direction.py --run none_seed0     # train_lstm.py 를 먼저 실행할 것
+    .venv/bin/python scripts/diag_lstm_direction.py --run rotate_seed0
 """
+
+import argparse
 
 import torch
 
@@ -23,13 +26,17 @@ def x_dominant_fraction(ds, min_dist=1.0):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--run', default='none_seed0', help='checkpoints/lstm_<run>_<scene>.pt 의 <run>')
+    args = parser.parse_args()
+
     rot90 = torch.tensor([[0., -1.], [1., 0.]])      # 반시계 90° 회전 행렬
     for scene in ['eth', 'hotel']:
         train = load_split('data/raw', scene, 'train', normalize=True)
         test = load_split('data/raw', scene, 'test', normalize=True)
         print(f'[{scene}] x 방향 우세 비율  train {x_dominant_fraction(train)}  test {x_dominant_fraction(test)}')
 
-        ckpt = torch.load(f'checkpoints/lstm_{scene}.pt')
+        ckpt = torch.load(f'checkpoints/lstm_{args.run}_{scene}.pt')
         model = LSTMEncoderDecoder(embed_dim=ckpt['args']['embed_dim'], hidden_dim=ckpt['args']['hidden_dim'])
         model.load_state_dict(ckpt['state_dict'])
         model.eval()
