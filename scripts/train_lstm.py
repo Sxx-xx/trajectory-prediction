@@ -1,4 +1,4 @@
-"""Vanilla LSTM encoder-decoder 를 leave-one-out 5개 분할에서 학습 · 평가한다.
+"""LSTM encoder-decoder (또는 --model transformer) 를 leave-one-out 5개 분할에서 학습 · 평가한다.
 
 장면 하나마다
     1. data/raw/<scene>/train 으로 학습, data/raw/<scene>/val 로 검증
@@ -8,9 +8,10 @@
        --frame heading  이면 진행 방향 정규화 좌표로 예측한다 (모델 안에서 처리, 학습 · 평가 모두)
        --residual       이면 등속 예측에 더할 보정량을 예측한다
        --social         이면 같은 프레임 이웃을 격자에 모아 인코더에 넣는다 (grid pooling)
+                        (--model transformer 면 마지막 관측 프레임 이웃에 cross-attention)
     3. 저장한 best 모델로 data/raw/<scene>/test 에서 ADE/FDE 를 잰다
 
-출력 (<run> = <augment>[_heading][_residual][_social]_seed<seed>, 예: rotate_seed0, rotate_heading_social_seed1)
+출력 (<run> = [tf_]<augment>[_heading][_residual][_social][_<tag>]_seed<seed>, 예: rotate_seed0, tf_none_heading_social_seed1)
     checkpoints/lstm_<run>_<scene>.pt   : best 모델 (state_dict 와 설정)
     results/lstm/<run>.csv              : 장면별 test ADE/FDE 와 평균
     results/lstm/<run>_history.csv      : 에폭별 train/val loss, val ADE
@@ -37,7 +38,7 @@ from torch import nn  # noqa: E402
 
 from trajpred.data import SCENES, load_split  # noqa: E402
 from trajpred.metrics import ade, fde  # noqa: E402
-from trajpred.models import LSTMEncoderDecoder  # noqa: E402
+from trajpred.models import LSTMEncoderDecoder, TransformerPredictor  # noqa: E402
 
 TRAIN_COLOR = '#2a78d6'    # train loss = 파랑, 실선
 VAL_COLOR = '#eb6834'      # val loss = 주황, 점선
@@ -114,10 +115,15 @@ def train_scene(scene, args, device):
     val = split_tensors(args, scene, 'val', device)
     print(f'[{scene}] train {len(train["obs"])}  val {len(val["obs"])}')
 
-    model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim,
-                               frame=args.frame, residual=args.residual, social=args.social,
-                               grid_size=args.grid_size, cell=args.cell,
-                               social_dropout=args.social_dropout).to(device)
+    if args.model == 'transformer':
+        model = TransformerPredictor(pred_len=12, d_model=args.d_model, n_heads=args.n_heads,
+                                     n_layers=args.n_layers, ff_dim=args.ff_dim, dropout=args.dropout,
+                                     frame=args.frame, social=args.social).to(device)
+    else:
+        model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim,
+                                   frame=args.frame, residual=args.residual, social=args.social,
+                                   grid_size=args.grid_size, cell=args.cell,
+                                   social_dropout=args.social_dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()   # 예측 위치와 실제 위치의 좌표별 제곱 오차 평균 (m^2)
 
@@ -199,6 +205,12 @@ def main():
     parser.add_argument('--cv', default='results/cv.csv', help='비교용 등속 모델 결과')
     parser.add_argument('--ckpt', default='checkpoints')
     parser.add_argument('--scenes', nargs='+', default=SCENES)
+    parser.add_argument('--model', choices=['lstm', 'transformer'], default='lstm')
+    parser.add_argument('--d-model', type=int, default=64, help='transformer')
+    parser.add_argument('--n-heads', type=int, default=4, help='transformer')
+    parser.add_argument('--n-layers', type=int, default=2, help='transformer')
+    parser.add_argument('--ff-dim', type=int, default=128, help='transformer')
+    parser.add_argument('--dropout', type=float, default=0.1, help='transformer')
     parser.add_argument('--embed-dim', type=int, default=64)
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--batch-size', type=int, default=64)
@@ -218,7 +230,9 @@ def main():
                         help='진단용. shuffle 이면 이웃을 다른 샘플의 것으로 바꾼다')
     parser.add_argument('--tag', default='', help='run 이름 뒤에 붙일 이름 (설정 비교용)')
     args = parser.parse_args()
-    run = (args.augment + ('_heading' if args.frame == 'heading' else '')
+    if args.model == 'transformer' and args.residual:
+        parser.error('--residual 은 LSTM 에만 있다')
+    run = (('tf_' if args.model == 'transformer' else '') + args.augment + ('_heading' if args.frame == 'heading' else '')
            + ('_residual' if args.residual else '') + ('_social' if args.social else '')
            + (f'_{args.tag}' if args.tag else '') + f'_seed{args.seed}')
 

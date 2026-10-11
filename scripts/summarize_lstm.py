@@ -5,7 +5,7 @@
 출력 : results/lstm/summary.csv
        화면에 README 용 마크다운 표 (ADE 표, FDE 표)
 
-표준편차는 시드 간 표본 표준편차(n-1 로 나눔)다.
+표준편차는 시드 간 표본 표준편차(n-1 로 나눔)다. 굵은 글씨는 장면마다 (반올림한) 평균이 가장 작은 칸이다.
 AVG 행은 시드마다 5개 장면 평균을 먼저 구한 뒤, 그 값들의 평균 ± 표준편차다.
 
     .venv/bin/python scripts/summarize_lstm.py --seeds 0 1 2
@@ -28,6 +28,9 @@ CONDITIONS = [
     ('none_heading_residual', 'heading + residual'),
     ('rotate_heading', 'heading + 회전 증강'),
     ('rotate_heading_social_g4d5', '+ social pooling'),
+    ('tf_none_heading', 'Transformer'),
+    ('tf_none_heading_social', 'Transformer + 이웃 attention'),
+    ('tf_none_heading_social_shuffle', 'Transformer + 섞은 이웃'),
 ]
 ROWS = SCENES + ['AVG']
 
@@ -74,9 +77,12 @@ def main():
         print('| 장면 | 등속 | ' + ' | '.join(labels[c] for c in stats) + ' |')
         print('| :--- | :-: |' + ' :-: |' * len(stats))
         for scene in ROWS:
-            cells = [f'{cv[scene][cv_col]:.3f}']
-            cells += [f'{stats[c][scene][col]:.3f} ± {stats[c][scene][col + 1]:.3f}' for c in stats]
-            print(f'| {scene} | ' + ' | '.join(cells) + ' |')
+            means = [f'{cv[scene][cv_col]:.3f}'] + [f'{stats[c][scene][col]:.3f}' for c in stats]
+            cells = [means[0]] + [f'{m} ± {stats[c][scene][col + 1]:.3f}' for m, c in zip(means[1:], stats)]
+            best = min(means, key=float)                      # 반올림한 평균이 가장 작은 칸을 굵게
+            cells = [f'**{cell}**' if m == best else cell for cell, m in zip(cells, means)]
+            name = '**AVG**' if scene == 'AVG' else scene
+            print(f'| {name} | ' + ' | '.join(cells) + ' |')
     print(f'\nsaved {folder / "summary.csv"}')
 
 

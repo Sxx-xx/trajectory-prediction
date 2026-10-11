@@ -1,6 +1,6 @@
 # 로드맵
 
-지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석, B단계 grid pooling. 자세한 내용은 [README](../README.md)에 있다.
+지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석, B단계 grid pooling, C단계 Transformer · 이웃 attention. 자세한 내용은 [README](../README.md)에 있다.
 
 모든 단계에 공통으로 적용하는 규칙은 다음과 같다.
 
@@ -15,7 +15,7 @@
 | :-: | :--- | :--- |
 | A | 오차 분석: 오차 분해, heading 정규화, residual | 완료 ([분석](analysis.md), [노트](notes/A_analysis.md)) |
 | B | 상호작용: 주변 보행자 정보, Social Pooling 간단 버전 | 완료 ([분석](interaction.md), [노트](notes/B_interaction.md)) |
-| C | Transformer: 시간축 + 보행자 간 attention | 예정 |
+| C | Transformer: 시간축 + 보행자 간 attention | 완료 ([분석](transformer.md), [노트](notes/C_transformer.md)) |
 | D | Multimodal: K=20 예측, best-of-20, 논문 표와 비교 | 예정 |
 | E | Argoverse 2로 차량 확장 | 예정 |
 
@@ -81,14 +81,22 @@
 2. 보행자 간 attention: 같은 프레임 보행자들의 시간축 임베딩끼리 attention하고, 거리가 먼 이웃은 마스킹한다(STAR, AgentFormer 계열의 간단화).
 3. A에서 효과가 확인된 설계(heading frame, residual)를 그대로 가져가 공정하게 비교한다.
 
+**실제로 한 것** (2026-10-11, 요청 범위: heading frame 기본, non-autoregressive, 대상 → 이웃 cross-attention)
+
+- 1번은 non-autoregressive만 했다. autoregressive 디코더와의 비교는 하지 않았다.
+- 2번은 "같은 프레임 보행자들끼리 서로 attention"(STAR, AgentFormer 계열) 대신, 대상 보행자 한 명이 마지막 관측 프레임의 이웃들에게 cross-attention하는 더 간단한 버전으로 했다. 장면 배치 collate는 여전히 만들지 않았다.
+- 3번 중 residual은 Transformer에 넣지 않았다.
+- 추가로 B단계처럼 섞은 이웃 대조 실험과, attention 가중치 통계 · 이웃 지우기 시험을 했다.
+- 결과: 이웃 attention이 AVG FDE 1.059로 처음으로 등속 모델(1.141)을 확실히 이겼다. AVG ADE는 아직 등속이 낫다. 자세한 내용은 [transformer.md](transformer.md)에 있다.
+
 **완료 기준**
 
-- [ ] 시간축만 쓰는 Transformer와 보행자 간 attention을 더한 버전, 각각 시드 3개의 결과표
-- [ ] 파라미터 수 · 학습 시간 · ADE/FDE를 LSTM · Social Pooling과 한 표로 비교
-- [ ] attention 가중치 시각화 예시 1~2개
-- [ ] `docs/notes/C_transformer.md`
+- [x] 시간축만 쓰는 Transformer와 이웃 attention 버전, 각각 시드 3개의 결과표 (+ 섞은 이웃 대조)
+- [x] 파라미터 수 · 학습 시간 · ADE/FDE를 LSTM · Social Pooling과 한 표로 비교 ([transformer.md 2.1](transformer.md#21-크기--학습-시간--성능-한눈에))
+- [x] attention 가중치 시각화 예시
+- [x] `docs/notes/C_transformer.md`
 
-**예상 소요**: 10~14시간
+**예상 소요**: 10~14시간. 학습 9회는 3개씩 동시에 돌려 약 25분 걸렸다.
 
 ---
 

@@ -148,9 +148,19 @@ class LSTMEncoderDecoder(nn.Module):
 
 
 def load_lstm(path, device='cpu'):
-    """scripts/train_lstm.py 가 저장한 체크포인트에서 모델을 만든다 (eval 모드)."""
+    """scripts/train_lstm.py 가 저장한 체크포인트에서 모델을 만든다 (eval 모드).
+
+    --model transformer 로 학습한 체크포인트면 TransformerPredictor 를 만든다.
+    """
     ckpt = torch.load(path, map_location=device)
     args = ckpt['args']
+    if args.get('model', 'lstm') == 'transformer':
+        from .transformer import TransformerPredictor
+        model = TransformerPredictor(d_model=args['d_model'], n_heads=args['n_heads'], n_layers=args['n_layers'],
+                                     ff_dim=args['ff_dim'], dropout=args['dropout'], frame=args['frame'],
+                                     social=args['social'])
+        model.load_state_dict(ckpt['state_dict'])
+        return model.to(device).eval()
     model = LSTMEncoderDecoder(embed_dim=args['embed_dim'], hidden_dim=args['hidden_dim'],
                                frame=args.get('frame', 'world'), residual=args.get('residual', False),
                                social=args.get('social', False), grid_size=args.get('grid_size', 8),

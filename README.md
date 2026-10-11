@@ -8,7 +8,7 @@ ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 �
 | 2 | Vanilla LSTM encoder-decoder, 회전 증강 | 완료 |
 | A | 오차 분석: 오차 분해, heading 정규화, residual ([분석](docs/analysis.md), [노트](docs/notes/A_analysis.md)) | 완료 |
 | B | 상호작용: 같은 프레임 이웃의 grid pooling ([분석](docs/interaction.md), [노트](docs/notes/B_interaction.md)) | 완료 |
-| C | Transformer: 시간축 + 보행자 간 attention | 예정 |
+| C | Transformer: 시간축 self-attention + 이웃 cross-attention ([분석](docs/transformer.md), [노트](docs/notes/C_transformer.md)) | 완료 |
 | D | Multimodal: K=20 예측, best-of-20 | 예정 |
 | E | Argoverse 2로 차량 확장 | 예정 |
 
@@ -139,7 +139,7 @@ obs, fut, origin = ds[0]   # [8, 2], [12, 2], [2]
 1. **평가 샘플 규칙이 다르다.** 그 논문은 "길이가 10보다 짧은 잘린 궤적을 버린다(we reject sliced trajectories with a length shorter than 10)"고 적었다. 즉 미래가 12스텝보다 짧은 궤적도 평가에 들어간다. 이 저장소는 Social-GAN 규칙대로 20스텝이 다 있는 궤적만 쓴다. 예측 거리가 짧은 샘플이 섞이면 평균 오차는 작아진다.
 2. **eth 장면의 보행 속도가 유난히 크다.** 이 파일에서 보행자가 한 스텝(0.4 s)에 움직이는 평균 거리는 eth 0.95 m(약 2.4 m/s)이고, hotel 0.46 m, zara1 0.46 m, univ(students001) 0.29 m다. 등속 모델의 오차는 속도에 비례해 커지므로 eth 값이 크게 나온다. 같은 파일을 쓴 그 논문의 eth 값이 왜 이보다 작은지는 데이터 처리 방식을 알 수 없어 확인하지 못했다.
 
-## 결과: Vanilla LSTM encoder-decoder
+## 결과: LSTM · Transformer
 
 주변 보행자를 보지 않는 단일 보행자 모델이다(`src/trajpred/models/lstm.py`).
 
@@ -152,7 +152,8 @@ obs, fut, origin = ds[0]   # [8, 2], [12, 2], [2]
 - **heading frame**(`--frame heading`): 샘플마다 마지막 관측 변위가 +x를 향하도록 돌려 넣고, 예측을 원래 좌표로 되돌린다. 모델 안에서 처리하므로 학습과 평가에 모두 적용된다. 마지막 변위가 1 mm 미만이면 돌리지 않는다.
 - **residual**(`--residual`): 디코더가 스텝마다 등속 변위(마지막 관측 변위)에 더할 보정량을 낸다. 출력층을 0으로 초기화해 학습 시작 시점의 예측이 등속 모델과 같다.
 - **social pooling**(`--social`): 관측 스텝마다 대상 중심 격자(기본 8×8, 칸 0.75 m)에 같은 프레임 이웃을 넣고, 칸마다 (이웃 수, 평균 상대 속도)를 세어 인코더 입력에 붙인다. 표의 열은 val로 고른 4×4, 칸 1.5 m, dropout 0.5 설정(`--grid-size 4 --cell 1.5 --social-dropout 0.5 --tag g4d5`)이다. [docs/interaction.md](docs/interaction.md) 참고.
-- **검증 · early stopping**: `data/raw/<scene>/val`(test 장면을 뺀 4개 장면의 검증 구간)에서 에폭마다 ADE를 잰다. 20 에폭 동안 좋아지지 않으면 멈추고, val ADE가 가장 낮았던 모델을 `checkpoints/lstm_<run>_<scene>.pt`에 저장한다(`<run>` = `<augment>[_heading][_residual][_social][_<tag>]_seed<seed>`). test 분할은 학습과 모델 선택에 쓰지 않고, 저장한 best 모델로 마지막에 한 번만 평가한다.
+- **Transformer**(`--model transformer`, heading frame): 관측 변위 7개를 시간축 self-attention(2층, 4 head, 64차원)으로 인코딩하고, 미래 12스텝 변위를 한 번에 낸다(non-autoregressive). `--social`이면 마지막 관측 프레임 이웃에 cross-attention한다(null 토큰 + 마스킹). "섞은 이웃"은 이웃을 다른 샘플의 것으로 바꾼 대조 실험이다(`--neighbor-control shuffle`). [docs/transformer.md](docs/transformer.md) 참고.
+- **검증 · early stopping**: `data/raw/<scene>/val`(test 장면을 뺀 4개 장면의 검증 구간)에서 에폭마다 ADE를 잰다. 20 에폭 동안 좋아지지 않으면 멈추고, val ADE가 가장 낮았던 모델을 `checkpoints/lstm_<run>_<scene>.pt`에 저장한다(`<run>` = `[tf_]<augment>[_heading][_residual][_social][_<tag>]_seed<seed>`, Transformer는 `tf_`). test 분할은 학습과 모델 선택에 쓰지 않고, 저장한 best 모델로 마지막에 한 번만 평가한다.
 
 ```bash
 for seed in 0 1 2; do
@@ -164,11 +165,15 @@ for seed in 0 1 2; do
   .venv/bin/python scripts/train_lstm.py --frame heading --augment rotate --seed $seed
   .venv/bin/python scripts/train_lstm.py --frame heading --augment rotate --social \
       --grid-size 4 --cell 1.5 --social-dropout 0.5 --tag g4d5 --seed $seed
+  .venv/bin/python scripts/train_lstm.py --model transformer --frame heading --seed $seed
+  .venv/bin/python scripts/train_lstm.py --model transformer --frame heading --social --seed $seed
+  .venv/bin/python scripts/train_lstm.py --model transformer --frame heading --social \
+      --neighbor-control shuffle --tag shuffle --seed $seed
 done                                          # -> results/lstm/<run>{.csv,_history.csv,_curves.png}
 .venv/bin/python scripts/summarize_lstm.py   # -> results/lstm/summary.csv, 아래 표
 ```
 
-RTX 4070 Laptop에서 한 실행(5개 분할)은 혼자 돌리면 약 7분 걸린다. 21개 실행을 2~3개씩 동시에 돌렸다. 증강 없음 · 시드 0은 이전에 따로 돌린 결과와 소수 넷째 자리까지 같았다. 이 환경에서는 같은 시드면 같은 결과가 나온다.
+RTX 4070 Laptop에서 한 실행(5개 분할)은 혼자 돌리면 약 7분 걸린다. 30개 실행을 2~3개씩 동시에 돌렸다(Transformer는 한 실행에 약 5~8분). 증강 없음 · 시드 0은 이전에 따로 돌린 결과와 소수 넷째 자리까지 같았다. 이 환경에서는 같은 시드면 같은 결과가 나온다.
 
 ### 결과 (시드 0, 1, 2)
 
@@ -176,25 +181,25 @@ LSTM 값은 시드 3개의 평균 ± 표본 표준편차다. 등속 모델은 �
 
 ADE
 
-| 장면 | 등속 | 증강 없음 | 회전 증강 | heading | residual | heading + residual | heading + 회전 증강 | + social pooling |
-| :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| eth | 0.995 | 0.944 ± 0.010 | 0.918 ± 0.015 | 0.951 ± 0.045 | 0.949 ± 0.024 | 0.937 ± 0.014 | 0.998 ± 0.078 | **0.909 ± 0.011** |
-| hotel | **0.323** | 0.565 ± 0.004 | 0.418 ± 0.006 | 0.387 ± 0.013 | 0.534 ± 0.071 | 0.397 ± 0.008 | 0.392 ± 0.010 | 0.387 ± 0.013 |
-| univ | 0.524 | 0.545 ± 0.010 | 0.514 ± 0.004 | 0.517 ± 0.004 | 0.534 ± 0.002 | **0.509 ± 0.003** | 0.525 ± 0.009 | 0.546 ± 0.008 |
-| zara1 | 0.431 | 0.437 ± 0.022 | 0.456 ± 0.005 | 0.456 ± 0.006 | **0.430 ± 0.006** | 0.466 ± 0.007 | 0.462 ± 0.029 | 0.451 ± 0.010 |
-| zara2 | **0.326** | 0.347 ± 0.010 | 0.335 ± 0.008 | 0.346 ± 0.006 | 0.332 ± 0.012 | 0.341 ± 0.002 | 0.340 ± 0.006 | 0.360 ± 0.005 |
-| **AVG** | **0.520** | 0.568 ± 0.005 | 0.528 ± 0.002 | 0.531 ± 0.009 | 0.556 ± 0.021 | 0.530 ± 0.003 | 0.543 ± 0.014 | 0.531 ± 0.002 |
+| 장면 | 등속 | 증강 없음 | 회전 증강 | heading | residual | heading + residual | heading + 회전 증강 | + social pooling | Transformer | Transformer + 이웃 attention | Transformer + 섞은 이웃 |
+| :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| eth | 0.995 | 0.944 ± 0.010 | 0.918 ± 0.015 | 0.951 ± 0.045 | 0.949 ± 0.024 | 0.937 ± 0.014 | 0.998 ± 0.078 | **0.909 ± 0.011** | 0.944 ± 0.023 | 0.985 ± 0.029 | 1.023 ± 0.093 |
+| hotel | **0.323** | 0.565 ± 0.004 | 0.418 ± 0.006 | 0.387 ± 0.013 | 0.534 ± 0.071 | 0.397 ± 0.008 | 0.392 ± 0.010 | 0.387 ± 0.013 | 0.366 ± 0.012 | 0.333 ± 0.015 | 0.362 ± 0.024 |
+| univ | 0.524 | 0.545 ± 0.010 | 0.514 ± 0.004 | 0.517 ± 0.004 | 0.534 ± 0.002 | **0.509 ± 0.003** | 0.525 ± 0.009 | 0.546 ± 0.008 | 0.529 ± 0.004 | 0.572 ± 0.030 | 0.538 ± 0.010 |
+| zara1 | 0.431 | 0.437 ± 0.022 | 0.456 ± 0.005 | 0.456 ± 0.006 | **0.430 ± 0.006** | 0.466 ± 0.007 | 0.462 ± 0.029 | 0.451 ± 0.010 | 0.459 ± 0.005 | 0.443 ± 0.002 | 0.440 ± 0.006 |
+| zara2 | **0.326** | 0.347 ± 0.010 | 0.335 ± 0.008 | 0.346 ± 0.006 | 0.332 ± 0.012 | 0.341 ± 0.002 | 0.340 ± 0.006 | 0.360 ± 0.005 | 0.346 ± 0.012 | 0.354 ± 0.005 | 0.352 ± 0.009 |
+| **AVG** | **0.520** | 0.568 ± 0.005 | 0.528 ± 0.002 | 0.531 ± 0.009 | 0.556 ± 0.021 | 0.530 ± 0.003 | 0.543 ± 0.014 | 0.531 ± 0.002 | 0.529 ± 0.005 | 0.537 ± 0.003 | 0.543 ± 0.014 |
 
 FDE
 
-| 장면 | 등속 | 증강 없음 | 회전 증강 | heading | residual | heading + residual | heading + 회전 증강 | + social pooling |
-| :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| eth | 2.234 | 1.949 ± 0.046 | 1.921 ± 0.055 | 1.901 ± 0.067 | 2.080 ± 0.051 | 1.952 ± 0.061 | 1.967 ± 0.125 | **1.853 ± 0.035** |
-| hotel | **0.617** | 1.152 ± 0.013 | 0.806 ± 0.019 | 0.749 ± 0.028 | 1.069 ± 0.149 | 0.759 ± 0.012 | 0.748 ± 0.020 | 0.739 ± 0.036 |
-| univ | 1.165 | 1.184 ± 0.021 | 1.127 ± 0.010 | 1.129 ± 0.010 | 1.160 ± 0.004 | **1.118 ± 0.007** | 1.142 ± 0.019 | 1.161 ± 0.015 |
-| zara1 | 0.960 | 0.957 ± 0.051 | 1.021 ± 0.013 | 1.032 ± 0.020 | **0.939 ± 0.016** | 1.048 ± 0.021 | 1.028 ± 0.070 | 0.984 ± 0.026 |
-| zara2 | **0.729** | 0.769 ± 0.036 | 0.740 ± 0.016 | 0.751 ± 0.012 | 0.731 ± 0.023 | 0.759 ± 0.010 | 0.761 ± 0.026 | 0.797 ± 0.034 |
-| **AVG** | 1.141 | 1.202 ± 0.017 | 1.123 ± 0.019 | 1.112 ± 0.015 | 1.196 ± 0.044 | 1.127 ± 0.012 | 1.129 ± 0.020 | **1.107 ± 0.009** |
+| 장면 | 등속 | 증강 없음 | 회전 증강 | heading | residual | heading + residual | heading + 회전 증강 | + social pooling | Transformer | Transformer + 이웃 attention | Transformer + 섞은 이웃 |
+| :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| eth | 2.234 | 1.949 ± 0.046 | 1.921 ± 0.055 | 1.901 ± 0.067 | 2.080 ± 0.051 | 1.952 ± 0.061 | 1.967 ± 0.125 | 1.853 ± 0.035 | 1.928 ± 0.045 | **1.722 ± 0.056** | 1.960 ± 0.107 |
+| hotel | **0.617** | 1.152 ± 0.013 | 0.806 ± 0.019 | 0.749 ± 0.028 | 1.069 ± 0.149 | 0.759 ± 0.012 | 0.748 ± 0.020 | 0.739 ± 0.036 | 0.711 ± 0.016 | 0.620 ± 0.031 | 0.694 ± 0.048 |
+| univ | 1.165 | 1.184 ± 0.021 | 1.127 ± 0.010 | 1.129 ± 0.010 | 1.160 ± 0.004 | **1.118 ± 0.007** | 1.142 ± 0.019 | 1.161 ± 0.015 | 1.145 ± 0.008 | 1.223 ± 0.073 | 1.158 ± 0.023 |
+| zara1 | 0.960 | 0.957 ± 0.051 | 1.021 ± 0.013 | 1.032 ± 0.020 | **0.939 ± 0.016** | 1.048 ± 0.021 | 1.028 ± 0.070 | 0.984 ± 0.026 | 1.024 ± 0.011 | 0.954 ± 0.006 | 0.983 ± 0.012 |
+| zara2 | **0.729** | 0.769 ± 0.036 | 0.740 ± 0.016 | 0.751 ± 0.012 | 0.731 ± 0.023 | 0.759 ± 0.010 | 0.761 ± 0.026 | 0.797 ± 0.034 | 0.778 ± 0.024 | 0.779 ± 0.024 | 0.773 ± 0.021 |
+| **AVG** | 1.141 | 1.202 ± 0.017 | 1.123 ± 0.019 | 1.112 ± 0.015 | 1.196 ± 0.044 | 1.127 ± 0.012 | 1.129 ± 0.020 | 1.107 ± 0.009 | 1.117 ± 0.010 | **1.059 ± 0.005** | 1.114 ± 0.016 |
 
 AVG의 LSTM 값은 시드마다 5개 장면 평균을 먼저 구한 뒤 그 평균 ± 표준편차다. 시드별 값은 `results/lstm/<run>.csv`, 모은 표는 `results/lstm/summary.csv`에 있다.
 
@@ -210,6 +215,7 @@ AVG의 LSTM 값은 시드마다 5개 장면 평균을 먼저 구한 뒤 그 평�
 - **어떤 조건도 AVG ADE에서 등속 모델(0.520)을 넘지 못했다.** 자세한 분석은 [docs/analysis.md](docs/analysis.md)에 있다.
 - **heading과 heading + 회전 증강의 차이는 시드 잡음이다.** heading frame에서는 회전 증강이 거의 아무것도 바꾸지 않는다(정지 샘플 2~3%에만 영향).
 - **social pooling은 이웃 없는 heading과 같은 수준이다**(AVG 0.531 ± 0.002 대 0.531 ± 0.009). eth에서 낫고(0.909) univ · zara2에서 나쁘다. 15° 이상 꺾는 샘플에서도 개선이 없었다. 첫 설정(8×8)은 학습 데이터를 외워 val이 나빠졌다. 자세한 내용은 [docs/interaction.md](docs/interaction.md)에 있다.
+- **Transformer + 이웃 attention은 AVG FDE 1.059 ± 0.005로 모든 모델 중 가장 좋고, 등속(1.141)보다 확실히 낮다.** 15° 이상 꺾는 샘플이 크게 좋아졌다(all scenes 15–45°: 0.972 → 0.901). 섞은 이웃 대조군(1.114)은 이웃 없는 모델(1.117)과 같아서, 개선은 진짜 이웃 정보에서 온다. 대신 첫 스텝과 정지 · 저속 샘플에서 나빠져 AVG ADE(0.537)는 등속(0.520)보다 높다. attention 가중치는 가까운 · 다가오는 이웃에 몰리지 않았다. 자세한 내용은 [docs/transformer.md](docs/transformer.md)에 있다.
 - **학습 곡선**: 증강 없음은 val loss가 10~30 에폭 근처에서 평평해진 뒤 train loss만 계속 내려간다(과적합). 회전 증강은 train loss가 val loss 근처에 머문다. 마지막 에폭의 val loss / train loss 비는 증강 없음 1.01~1.31, 회전 증강 0.93~1.02다(5개 분할 × 시드 3개 범위).
 
 ### hotel: 진행 방향 편향과 회전 증강
@@ -237,9 +243,10 @@ scripts/
   download_data.sh     데이터 받기 (커밋 고정)
   check_gpu.py         CUDA 확인
   eval_cv.py           등속 모델 평가, 표 · 그림 저장
-  train_lstm.py        LSTM 학습 (leave-one-out 5개, --augment, --frame, --residual, --social, --seed), early stopping, test 평가
+  train_lstm.py        LSTM · Transformer 학습 (leave-one-out 5개, --model, --augment, --frame, --residual, --social, --seed), early stopping, test 평가
   summarize_lstm.py    시드별 결과 -> 평균 ± 표준편차 표
   diag_lstm_direction.py  LSTM 진행 방향 편향 진단 (hotel)
+  analyze_attention.py Transformer 이웃 attention 분석 (가중치 통계, 이웃 지우기 시험, 예시 그림)
   analyze_errors.py    오차 분해 (스텝별, 방향 전환 각도별, 속력별, 이웃 수별, hotel 차이 분해)
   compare_bins.py      시드별 오차 분해 -> 묶음별 평균 ± 표준편차
 src/trajpred/
@@ -248,6 +255,7 @@ src/trajpred/
   models/
     constant_velocity.py
     lstm.py            Vanilla LSTM encoder-decoder (autoregressive, heading frame, residual, grid pooling)
+    transformer.py     Transformer (시간축 self-attention, non-autoregressive, 이웃 cross-attention)
 results/
   cv.csv, cv_examples.png
   lstm/                <run>.csv, _history.csv, _curves.png, summary.csv
@@ -257,6 +265,7 @@ docs/
   ROADMAP.md           단계별 계획
   analysis.md          A단계 오차 분석
   interaction.md       B단계 이웃 정보 (grid pooling)
+  transformer.md       C단계 Transformer와 이웃 attention
   figures/             analysis.md 그림
   notes/               단계별 공부 노트
 checkpoints/           best 모델 (git 에 넣지 않는다)

@@ -57,7 +57,9 @@ COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6']
 LABELS = {'cv': 'constant velocity', 'none': 'LSTM', 'rotate': 'LSTM + rotation aug',
           'none_heading': 'LSTM heading', 'none_residual': 'LSTM residual',
           'none_heading_residual': 'LSTM heading + residual',
-          'rotate_heading': 'LSTM heading + rot aug', 'rotate_heading_social_g4d5': 'Social (grid pooling)'}
+          'rotate_heading': 'LSTM heading + rot aug', 'rotate_heading_social_g4d5': 'Social (grid pooling)',
+          'tf_none_heading': 'Transformer', 'tf_none_heading_social': 'Transformer + nbr attention',
+          'tf_none_heading_social_shuffle': 'Transformer + shuffled nbrs'}
 GRID_COLOR = '#e4e3df'
 
 
@@ -83,7 +85,16 @@ def scene_samples(root, scene, runs):
     out = {'err': {}, 'final': {}, 'end': {'gt': fut[:, -1].numpy()}}
     with torch.no_grad():
         for name, model in models.items():
-            pred = model(obs, ds.nbr, ds.nbr_mask) if getattr(model, 'social', False) else model(obs)  # [N, 12, 2]
+            if getattr(model, 'social', False):
+                nbr, nbr_mask = ds.nbr, ds.nbr_mask
+                if '_shuffle' in name:
+                    # 섞은 이웃으로 학습한 모델은 평가 때도 train_lstm.py 와 같은 방식으로 섞은 이웃을 받는다
+                    seed = int(name.rsplit('_seed', 1)[1])
+                    perm = torch.randperm(len(nbr), generator=torch.Generator().manual_seed(seed))
+                    nbr, nbr_mask = nbr[perm], nbr_mask[perm]
+                pred = model(obs, nbr, nbr_mask)                      # [N, 12, 2]
+            else:
+                pred = model(obs)                                     # [N, 12, 2]
             out['err'][name] = displacement(pred, fut).numpy()        # [N, 12]
             out['final'][name] = (pred[:, -1] - fut[:, -1]).numpy()   # [N, 2]
             out['end'][name] = pred[:, -1].numpy()                    # [N, 2]
