@@ -158,7 +158,8 @@ def load_lstm(path, device='cpu'):
         from .transformer import TransformerPredictor
         model = TransformerPredictor(d_model=args['d_model'], n_heads=args['n_heads'], n_layers=args['n_layers'],
                                      ff_dim=args['ff_dim'], dropout=args['dropout'], frame=args['frame'],
-                                     social=args['social'])
+                                     social=args['social'], residual=args.get('residual', False),
+                                     num_modes=args.get('modes', 1))
         model.load_state_dict(ckpt['state_dict'])
         return model.to(device).eval()
     model = LSTMEncoderDecoder(embed_dim=args['embed_dim'], hidden_dim=args['hidden_dim'],

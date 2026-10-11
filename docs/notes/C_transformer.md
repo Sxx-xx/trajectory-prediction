@@ -47,19 +47,20 @@ attention 출력은 Σ(가중치 × value)다. 가중치가 작아도 value 벡�
 
 | 내용 | 위치 |
 | :--- | :--- |
-| 시점 위치 임베딩(학습하는 파라미터) | `src/trajpred/models/transformer.py:39` |
-| null 토큰 | `src/trajpred/models/transformer.py:46` |
-| 마지막 관측 프레임 이웃만 사용 | `src/trajpred/models/transformer.py:65` |
-| 토큰 = [변위, 위치], 위치 임베딩 더해 인코더 통과 | `src/trajpred/models/transformer.py:80`–`81` |
-| 마지막 시점 출력을 요약으로 | `src/trajpred/models/transformer.py:82` |
-| 이웃 상대 속도 계산 | `src/trajpred/models/transformer.py:86` |
-| key = [null, 이웃들], 빈 칸 마스크(null은 절대 안 가림) | `src/trajpred/models/transformer.py:88`–`89` |
-| cross-attention과 가중치 저장 | `src/trajpred/models/transformer.py:90`–`92` |
-| 잔차 연결 + LayerNorm | `src/trajpred/models/transformer.py:93` |
-| 12스텝 한 번에 예측 | `src/trajpred/models/transformer.py:95` |
+| 시점 위치 임베딩(학습하는 파라미터) | `src/trajpred/models/transformer.py:44` |
+| null 토큰 | `src/trajpred/models/transformer.py:51` |
+| 마지막 관측 프레임 이웃만 사용 | `src/trajpred/models/transformer.py:77` |
+| 토큰 = [변위, 위치], 위치 임베딩 더해 인코더 통과 | `src/trajpred/models/transformer.py:95`–`96` |
+| 마지막 시점 출력을 요약으로 | `src/trajpred/models/transformer.py:97` |
+| 이웃 상대 속도 계산 | `src/trajpred/models/transformer.py:101` |
+| key = [null, 이웃들], 빈 칸 마스크(null은 절대 안 가림) | `src/trajpred/models/transformer.py:103`–`104` |
+| cross-attention과 가중치 저장 | `src/trajpred/models/transformer.py:105`–`107` |
+| 잔차 연결 + LayerNorm | `src/trajpred/models/transformer.py:108` |
+| 12스텝 한 번에 예측 | `src/trajpred/models/transformer.py:110` |
+| residual: 출력층 0 초기화 · 등속 변위 + 보정량 | `src/trajpred/models/transformer.py:61`–`62`, `src/trajpred/models/transformer.py:112` |
 | 체크포인트에서 Transformer 불러오기 | `src/trajpred/models/lstm.py:157` |
-| `--model transformer` 분기, 실행 이름 `tf_` | `scripts/train_lstm.py:118`, `235` |
-| 섞은 이웃 모델은 평가 때도 같은 방식으로 섞기 | `scripts/analyze_errors.py:90` |
+| `--model transformer` 분기, 실행 이름 `tf_` | `scripts/train_lstm.py:118`, `233` |
+| 섞은 이웃 모델은 평가 때도 같은 방식으로 섞기 | `scripts/analyze_errors.py:91` |
 | closing speed(다가옴) 계산 | `scripts/analyze_attention.py:66` |
 | 가장 많이 본 이웃 = 가장 가까운 이웃? | `scripts/analyze_attention.py:87` |
 | 이웃 지우기 시험 | `scripts/analyze_attention.py:100`–`104` |
@@ -73,7 +74,8 @@ attention 출력은 Σ(가중치 × value)다. 가중치가 작아도 value 벡�
 3. **꺾는 샘플**: all scenes 15–45° 0.972 → 0.901, 45°+ 1.556 → 1.398. A · B단계에서 풀지 못한 질문("이웃이 꺾는 이유를 알려 주는가")에 처음으로 "그렇다"는 결과가 나왔다.
 4. **grid pooling(B)과 차이가 난 이유(추측)**: grid는 고정된 192/48차원 벡터라 샘플 지문이 되기 쉬웠다. attention은 이웃 하나하나를 같은 가중치로 임베딩하고 가중 평균하므로, 개별 샘플을 외우기 어렵고 일반화되는 규칙을 배우기 쉽다. 또 grid는 칸 경계에서 정보가 끊기지만, attention은 연속적인 상대 위치를 그대로 쓴다.
 5. **손해**: 정지 · 저속(+0.040), 혼자인 샘플(+0.077), 6명 이상(+0.049, 주로 univ). 이웃에 기대도록 배운 모델은 이웃이 없거나(혼자) 학습 때와 밀도가 다르면(univ) 나빠진다.
-6. **attention이 보는 것**: 가장 많이 본 이웃이 가장 가까운 이웃인 비율은 무작위 수준(약 0.12)이다. 먼 이웃(4 m+)의 가중치가 조금 크다. 지우기 시험에서도 all scenes에서는 먼 이웃을 지울 때 FDE가 가장 나빠졌다. 반대로 hotel에서는 4 m 안 이웃만 영향을 줬다. 개별 이웃 회피보다 "주변 사람들 배치 = 걸을 수 있는 길과 흐름"을 단서로 쓰는 것으로 보인다(추측).
+6. **residual 추가(후속 실험)**: 등속 변위 + 보정량으로 바꾸자 AVG 0.505 / 1.094로 ADE · FDE 둘 다 등속을 이겼다. 첫 스텝(0.083 → 0.048), 혼자인 샘플(0.591 → 0.474), 6명 이상(0.613 → 0.540)의 손해가 사라졌다. 대신 FDE는 residual 없는 쪽(1.059)이 낫다. residual 모델은 이동 거리를 등속에 가깝게 유지하고(기울기 약 0.95), residual 없는 모델은 크게 줄인다(약 0.6, 실제 0.71). "쉬운 답(등속)을 기본값으로 주면 쉬운 샘플에서 잃지 않는다"는 A단계 residual의 아이디어가 여기서 처음 효과를 냈다.
+7. **attention이 보는 것**: 가장 많이 본 이웃이 가장 가까운 이웃인 비율은 무작위 수준(약 0.12)이다. 먼 이웃(4 m+)의 가중치가 조금 크다. 지우기 시험에서도 all scenes에서는 먼 이웃을 지울 때 FDE가 가장 나빠졌다. 반대로 hotel에서는 4 m 안 이웃만 영향을 줬다. 개별 이웃 회피보다 "주변 사람들 배치 = 걸을 수 있는 길과 흐름"을 단서로 쓰는 것으로 보인다(추측).
 
 **배운 점**
 

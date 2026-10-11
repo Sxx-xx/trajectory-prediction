@@ -16,6 +16,9 @@ social=True 이면 이웃 cross-attention 을 더한다.
     h <- LayerNorm(h + attention 출력),  그다음 같은 MLP 로 예측
 
 frame='heading' 이면 LSTM 과 같은 진행 방향 정규화를 쓴다 (이웃도 같이 돈다).
+
+residual=True 이면 MLP 출력을 '등속 변위(마지막 관측 변위)에 더할 보정량'으로 쓴다.
+    예측 변위[k] = d[7] + MLP(h)[k]  (k = 1..12).  MLP 마지막 층을 0으로 초기화해서 학습 시작 = 등속 모델.
 """
 
 import torch
@@ -26,13 +29,15 @@ from .lstm import heading_rotation
 
 class TransformerPredictor(nn.Module):
     def __init__(self, obs_len=8, pred_len=12, d_model=64, n_heads=4, n_layers=2, ff_dim=128,
-                 dropout=0.1, frame='heading', social=False):
+                 dropout=0.1, frame='heading', social=False, residual=False, num_modes=1):
         super().__init__()
         if frame not in ('world', 'heading'):
             raise ValueError(f"frame 은 'world' | 'heading': {frame}")
         self.pred_len = pred_len
         self.frame = frame
         self.social = social
+        self.residual = residual
+        self.num_modes = num_modes
         steps = obs_len - 1                                         # 변위 토큰 수 (7)
 
         self.input_proj = nn.Linear(4, d_model)
@@ -48,11 +53,18 @@ class TransformerPredictor(nn.Module):
             self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
             self.cross_norm = nn.LayerNorm(d_model)
 
-        self.head = nn.Sequential(nn.Linear(d_model, ff_dim), nn.ReLU(), nn.Linear(ff_dim, pred_len * 2))
+        self.head = nn.Sequential(nn.Linear(d_model, ff_dim), nn.ReLU(),
+                                  nn.Linear(ff_dim, num_modes * pred_len * 2))
+        if num_modes > 1:
+            self.score_head = nn.Sequential(nn.Linear(d_model, ff_dim), nn.ReLU(), nn.Linear(ff_dim, num_modes))
+        if residual and num_modes == 1:
+            nn.init.zeros_(self.head[-1].weight)      # 시작할 때 보정량 0 = 등속 모델
+            nn.init.zeros_(self.head[-1].bias)
         self.last_attention = None    # 마지막 forward 의 cross-attention 가중치 [N, 1 + K] (시각화용)
 
     def forward(self, obs, nbr=None, nbr_mask=None):
         """obs: [N, obs_len, 2] -> 예측 위치 [N, pred_len, 2]
+        (num_modes = K > 1 이면 (예측 위치 [N, K, pred_len, 2], 모드 logit [N, K]))
 
         social 이면 nbr [N, obs_len, K, 4] (상대 위치, 속도), nbr_mask [N, obs_len, K] 가 필요하다.
         마지막 관측 프레임(t = obs_len - 1)의 이웃만 쓴다.
@@ -69,13 +81,16 @@ class TransformerPredictor(nn.Module):
             if self.social:
                 n, k, _ = nbr.shape
                 nbr = (nbr.reshape(n, k * 2, 2) @ rot_t).reshape(n, k, 4)
-        pred = self._predict(x, nbr, nbr_mask)                      # [N, pred_len, 2] (원점 기준)
+        pred, logits = self._predict(x, nbr, nbr_mask)              # [N, K, pred_len, 2] (원점 기준), [N, K]
         if self.frame == 'heading':
-            pred = pred @ rot_t.transpose(1, 2)                     # 원래 방향으로: p @ R
-        return pred + last
+            pred = pred @ rot_t.transpose(1, 2)[:, None]            # 원래 방향으로: p @ R  ([N, 1, 2, 2] 로 모드마다)
+        pred = pred + last[:, None]                                 # [N, K, pred_len, 2]
+        if self.num_modes == 1:
+            return pred[:, 0]                                       # [N, pred_len, 2]
+        return pred, logits
 
     def _predict(self, x, nbr, nbr_mask):
-        """x: [N, obs_len, 2] (마지막 관측점 = 원점) -> [N, pred_len, 2]"""
+        """x: [N, obs_len, 2] (마지막 관측점 = 원점) -> ([N, K, pred_len, 2], logit [N, K] 또는 None)"""
         disp = x[:, 1:] - x[:, :-1]                                 # [N, 7, 2]
         tokens = torch.cat([disp, x[:, 1:]], dim=-1)                # [N, 7, 4] 변위, 위치
         h = self.encoder(self.input_proj(tokens) + self.pos_embed)  # [N, 7, d]
@@ -92,5 +107,8 @@ class TransformerPredictor(nn.Module):
             self.last_attention = weights[:, 0].detach()            # [N, 1 + K]
             h = self.cross_norm(h + ctx[:, 0])                      # [N, d]
 
-        pred_disp = self.head(h).reshape(-1, self.pred_len, 2)      # [N, 12, 2] 한 번에
-        return pred_disp.cumsum(dim=1)                              # [N, 12, 2]
+        pred_disp = self.head(h).reshape(-1, self.num_modes, self.pred_len, 2)   # [N, K, 12, 2] 한 번에
+        if self.residual:
+            pred_disp = disp[:, None, -1:, :] + pred_disp           # 등속 변위 [N, 1, 1, 2] + 보정량 [N, K, 12, 2]
+        logits = self.score_head(h.detach()) if self.num_modes > 1 else None     # [N, K]
+        return pred_disp.cumsum(dim=2), logits                      # [N, K, 12, 2]

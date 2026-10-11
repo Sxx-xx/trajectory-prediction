@@ -85,7 +85,7 @@
 
 - 1번은 non-autoregressive만 했다. autoregressive 디코더와의 비교는 하지 않았다.
 - 2번은 "같은 프레임 보행자들끼리 서로 attention"(STAR, AgentFormer 계열) 대신, 대상 보행자 한 명이 마지막 관측 프레임의 이웃들에게 cross-attention하는 더 간단한 버전으로 했다. 장면 배치 collate는 여전히 만들지 않았다.
-- 3번 중 residual은 Transformer에 넣지 않았다.
+- 3번 중 residual은 처음에는 넣지 않았다가, 후속으로 이웃 attention + residual을 시드 3개로 돌렸다. AVG 0.505 / 1.094로 ADE · FDE 둘 다 등속을 이겼다([transformer.md 6절](transformer.md#6-residual-추가-등속-예측--보정량)).
 - 추가로 B단계처럼 섞은 이웃 대조 실험과, attention 가중치 통계 · 이웃 지우기 시험을 했다.
 - 결과: 이웃 attention이 AVG FDE 1.059로 처음으로 등속 모델(1.141)을 확실히 이겼다. AVG ADE는 아직 등속이 낫다. 자세한 내용은 [transformer.md](transformer.md)에 있다.
 

@@ -59,7 +59,8 @@ LABELS = {'cv': 'constant velocity', 'none': 'LSTM', 'rotate': 'LSTM + rotation 
           'none_heading_residual': 'LSTM heading + residual',
           'rotate_heading': 'LSTM heading + rot aug', 'rotate_heading_social_g4d5': 'Social (grid pooling)',
           'tf_none_heading': 'Transformer', 'tf_none_heading_social': 'Transformer + nbr attention',
-          'tf_none_heading_social_shuffle': 'Transformer + shuffled nbrs'}
+          'tf_none_heading_social_shuffle': 'Transformer + shuffled nbrs',
+          'tf_none_heading_residual_social': 'Transformer + nbr attn + residual'}
 GRID_COLOR = '#e4e3df'
 
 

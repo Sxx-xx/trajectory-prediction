@@ -118,7 +118,7 @@ def train_scene(scene, args, device):
     if args.model == 'transformer':
         model = TransformerPredictor(pred_len=12, d_model=args.d_model, n_heads=args.n_heads,
                                      n_layers=args.n_layers, ff_dim=args.ff_dim, dropout=args.dropout,
-                                     frame=args.frame, social=args.social).to(device)
+                                     frame=args.frame, social=args.social, residual=args.residual).to(device)
     else:
         model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim,
                                    frame=args.frame, residual=args.residual, social=args.social,
@@ -230,8 +230,6 @@ def main():
                         help='진단용. shuffle 이면 이웃을 다른 샘플의 것으로 바꾼다')
     parser.add_argument('--tag', default='', help='run 이름 뒤에 붙일 이름 (설정 비교용)')
     args = parser.parse_args()
-    if args.model == 'transformer' and args.residual:
-        parser.error('--residual 은 LSTM 에만 있다')
     run = (('tf_' if args.model == 'transformer' else '') + args.augment + ('_heading' if args.frame == 'heading' else '')
            + ('_residual' if args.residual else '') + ('_social' if args.social else '')
            + (f'_{args.tag}' if args.tag else '') + f'_seed{args.seed}')

@@ -31,6 +31,7 @@ CONDITIONS = [
     ('tf_none_heading', 'Transformer'),
     ('tf_none_heading_social', 'Transformer + 이웃 attention'),
     ('tf_none_heading_social_shuffle', 'Transformer + 섞은 이웃'),
+    ('tf_none_heading_residual_social', 'Transformer + 이웃 attention + residual'),
 ]
 ROWS = SCENES + ['AVG']
 
