@@ -5,9 +5,11 @@
        (둘 다 <scene> 을 뺀 나머지 4개 장면이다. test 장면은 학습에 전혀 쓰지 않는다)
     2. 에폭마다 val ADE 를 재서 가장 좋았던 모델을 저장한다 (early stopping)
        --augment rotate 이면 학습 배치마다 궤적을 무작위 각도로 회전한다 (val, test 는 그대로)
+       --frame heading  이면 진행 방향 정규화 좌표로 예측한다 (모델 안에서 처리, 학습 · 평가 모두)
+       --residual       이면 등속 예측에 더할 보정량을 예측한다
     3. 저장한 best 모델로 data/raw/<scene>/test 에서 ADE/FDE 를 잰다
 
-출력 (<run> = <augment>_seed<seed>, 예: rotate_seed0)
+출력 (<run> = <augment>[_heading][_residual]_seed<seed>, 예: rotate_seed0, none_heading_residual_seed1)
     checkpoints/lstm_<run>_<scene>.pt   : best 모델 (state_dict 와 설정)
     results/lstm/<run>.csv              : 장면별 test ADE/FDE 와 평균
     results/lstm/<run>_history.csv      : 에폭별 train/val loss, val ADE
@@ -16,6 +18,7 @@
 
     .venv/bin/python scripts/train_lstm.py --augment none --seed 0
     .venv/bin/python scripts/train_lstm.py --augment rotate --seed 0
+    .venv/bin/python scripts/train_lstm.py --frame heading --residual --seed 0
 """
 
 import argparse
@@ -79,7 +82,8 @@ def train_scene(scene, args, device):
     val_obs, val_fut = val.obs.to(device), val.fut.to(device)           # [M, 8, 2], [M, 12, 2]
     print(f'[{scene}] train {len(train)}  val {len(val)}')
 
-    model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim).to(device)
+    model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim,
+                               frame=args.frame, residual=args.residual).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()   # 예측 위치와 실제 위치의 좌표별 제곱 오차 평균 (m^2)
 
@@ -168,8 +172,11 @@ def main():
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--augment', choices=['none', 'rotate'], default='none')
+    parser.add_argument('--frame', choices=['world', 'heading'], default='world')
+    parser.add_argument('--residual', action='store_true')
     args = parser.parse_args()
-    run = f'{args.augment}_seed{args.seed}'
+    run = (args.augment + ('_heading' if args.frame == 'heading' else '')
+           + ('_residual' if args.residual else '') + f'_seed{args.seed}')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('device:', device, ' run:', run)

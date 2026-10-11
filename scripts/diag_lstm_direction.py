@@ -15,7 +15,7 @@ import torch
 
 from trajpred.data import load_split
 from trajpred.metrics import ade
-from trajpred.models import LSTMEncoderDecoder
+from trajpred.models import load_lstm
 
 
 def x_dominant_fraction(ds, min_dist=1.0):
@@ -36,10 +36,7 @@ def main():
         test = load_split('data/raw', scene, 'test', normalize=True)
         print(f'[{scene}] x 방향 우세 비율  train {x_dominant_fraction(train)}  test {x_dominant_fraction(test)}')
 
-        ckpt = torch.load(f'checkpoints/lstm_{args.run}_{scene}.pt')
-        model = LSTMEncoderDecoder(embed_dim=ckpt['args']['embed_dim'], hidden_dim=ckpt['args']['hidden_dim'])
-        model.load_state_dict(ckpt['state_dict'])
-        model.eval()
+        model = load_lstm(f'checkpoints/lstm_{args.run}_{scene}.pt')
         with torch.no_grad():
             for k in range(4):
                 r = torch.linalg.matrix_power(rot90, k)          # [2, 2]

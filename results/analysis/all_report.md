@@ -1,0 +1,128 @@
+### 스텝별 평균 오차 (m): step 1, 4, 8, 12 / 전체 평균(= ADE)
+hotel      constant velocity         0.055  0.189  0.394  0.617  | ADE 0.323
+hotel      LSTM                      0.072  0.291  0.696  1.166  | ADE 0.566
+hotel      LSTM + rotation aug       0.060  0.232  0.506  0.824  | ADE 0.415
+hotel      LSTM heading              0.071  0.231  0.482  0.776  | ADE 0.399
+hotel      LSTM residual             0.078  0.302  0.698  1.164  | ADE 0.571
+hotel      LSTM heading + residual   0.064  0.234  0.482  0.755  | ADE 0.395
+all scenes constant velocity         0.045  0.245  0.634  1.141  | ADE 0.520
+all scenes LSTM                      0.060  0.283  0.684  1.192  | ADE 0.562
+all scenes LSTM + rotation aug       0.053  0.259  0.646  1.138  | ADE 0.530
+all scenes LSTM heading              0.062  0.264  0.644  1.123  | ADE 0.529
+all scenes LSTM residual             0.057  0.278  0.690  1.225  | ADE 0.568
+all scenes LSTM heading + residual   0.056  0.265  0.650  1.139  | ADE 0.534
+
+### 방향 전환 각도별  (ADE, m)
+
+hotel
+| bin | n | constant velocity | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: | --: |
+| slow/undefined | 623 | 0.180 | 0.232 | 0.239 | 0.235 | 0.211 | 0.224 |
+| 0-15° | 370 | 0.460 | 1.031 | 0.611 | 0.569 | 1.076 | 0.576 |
+| 15-45° | 55 | 0.896 | 1.143 | 0.976 | 0.995 | 1.164 | 0.994 |
+| 45°+ | 5 | 1.629 | 1.506 | 1.638 | 1.675 | 1.522 | 1.640 |
+
+all scenes
+| bin | n | constant velocity | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: | --: |
+| slow/undefined | 11,101 | 0.218 | 0.240 | 0.247 | 0.249 | 0.232 | 0.244 |
+| 0-15° | 14,190 | 0.561 | 0.647 | 0.571 | 0.577 | 0.666 | 0.590 |
+| 15-45° | 7,028 | 1.003 | 0.967 | 0.976 | 0.955 | 0.953 | 0.948 |
+| 45°+ | 1,335 | 1.705 | 1.556 | 1.617 | 1.542 | 1.594 | 1.580 |
+
+### 관측 속력별  (ADE, m)
+
+hotel
+| bin | n | constant velocity | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: | --: |
+| <0.2 m/s | 580 | 0.148 | 0.198 | 0.208 | 0.208 | 0.178 | 0.196 |
+| 0.2-0.8 | 148 | 0.516 | 0.643 | 0.590 | 0.603 | 0.587 | 0.603 |
+| 0.8-1.5 | 285 | 0.541 | 1.164 | 0.701 | 0.646 | 1.160 | 0.656 |
+| 1.5+ m/s | 40 | 0.577 | 1.365 | 0.725 | 0.644 | 2.013 | 0.648 |
+
+all scenes
+| bin | n | constant velocity | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: | --: |
+| <0.2 m/s | 9,554 | 0.175 | 0.201 | 0.205 | 0.219 | 0.192 | 0.209 |
+| 0.2-0.8 | 12,887 | 0.581 | 0.600 | 0.590 | 0.573 | 0.597 | 0.583 |
+| 0.8-1.5 | 10,615 | 0.519 | 0.616 | 0.576 | 0.552 | 0.613 | 0.566 |
+| 1.5+ m/s | 598 | 1.393 | 1.341 | 1.195 | 1.257 | 1.434 | 1.260 |
+
+### hotel: ADE 차이(모델 - 등속) 의 speed 묶음별 기여 (m, 합 = 전체 차이)
+| bin | 샘플 비율 | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: |
+| <0.2 m/s | 55% | +0.027 | +0.033 | +0.033 | +0.016 | +0.026 |
+| 0.2-0.8 | 14% | +0.018 | +0.010 | +0.012 | +0.010 | +0.012 |
+| 0.8-1.5 | 27% | +0.168 | +0.043 | +0.028 | +0.168 | +0.031 |
+| 1.5+ m/s | 4% | +0.030 | +0.006 | +0.003 | +0.055 | +0.003 |
+| 합 | 100% | +0.244 | +0.092 | +0.076 | +0.249 | +0.072 |
+
+### hotel: ADE 차이(모델 - 등속) 의 turn 묶음별 기여 (m, 합 = 전체 차이)
+| bin | 샘플 비율 | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: |
+| slow/undefined | 59% | +0.031 | +0.035 | +0.033 | +0.018 | +0.026 |
+| 0-15° | 35% | +0.201 | +0.053 | +0.038 | +0.217 | +0.041 |
+| 15-45° | 5% | +0.013 | +0.004 | +0.005 | +0.014 | +0.005 |
+| 45°+ | 0% | -0.001 | +0.000 | +0.000 | -0.001 | +0.000 |
+| 합 | 100% | +0.244 | +0.092 | +0.076 | +0.249 | +0.072 |
+
+### 마지막 스텝 오차의 진행 방향 성분 (관측 마지막 변위 >= 0.08 m 인 샘플)
+along 평균: + 면 예측이 실제보다 앞으로 더 감 / |along|, |cross|: 절댓값 평균 (m)
+| 그룹 | n | 모델 | along 평균 | abs(along) | abs(cross) |
+| :--- | --: | :--- | --: | --: | --: |
+| hotel | 493 | constant velocity | +0.417 | 0.760 | 0.585 |
+| hotel | 493 | LSTM | -0.921 | 1.570 | 1.255 |
+| hotel | 493 | LSTM + rotation aug | -0.259 | 1.035 | 0.721 |
+| hotel | 493 | LSTM heading | -0.114 | 0.896 | 0.704 |
+| hotel | 493 | LSTM residual | -1.131 | 1.748 | 1.082 |
+| hotel | 493 | LSTM heading + residual | -0.096 | 0.900 | 0.705 |
+| all scenes | 23,334 | constant velocity | +0.748 | 1.115 | 0.757 |
+| all scenes | 23,334 | LSTM | -0.065 | 1.143 | 0.855 |
+| all scenes | 23,334 | LSTM + rotation aug | +0.081 | 1.073 | 0.798 |
+| all scenes | 23,334 | LSTM heading | +0.025 | 1.057 | 0.784 |
+| all scenes | 23,334 | LSTM residual | +0.082 | 1.229 | 0.809 |
+| all scenes | 23,334 | LSTM heading + residual | +0.098 | 1.066 | 0.812 |
+
+### 4.8 s 이동 거리: 평균과, 등속 이동 거리(12 x 마지막 관측 변위)에 대한 회귀 기울기
+| 그룹 | n | 대상 | 평균 이동 거리 (m) | 기울기 |
+| :--- | --: | :--- | --: | --: |
+| hotel | 493 | actual future | 4.381 | 1.08 |
+| hotel | 493 | constant velocity | 4.708 | 1.00 |
+| hotel | 493 | LSTM | 3.559 | 0.59 |
+| hotel | 493 | LSTM + rotation aug | 4.043 | 0.80 |
+| hotel | 493 | LSTM heading | 4.183 | 0.88 |
+| hotel | 493 | LSTM residual | 3.379 | 0.52 |
+| hotel | 493 | LSTM heading + residual | 4.202 | 0.88 |
+| all scenes | 23,334 | actual future | 4.778 | 0.71 |
+| all scenes | 23,334 | constant velocity | 5.366 | 1.00 |
+| all scenes | 23,334 | LSTM | 4.617 | 0.80 |
+| all scenes | 23,334 | LSTM + rotation aug | 4.707 | 0.81 |
+| all scenes | 23,334 | LSTM heading | 4.651 | 0.81 |
+| all scenes | 23,334 | LSTM residual | 4.760 | 0.92 |
+| all scenes | 23,334 | LSTM heading + residual | 4.728 | 0.84 |
+
+### 관측 평균 속력 < 0.2 m/s 샘플: 4.8 s 이동 거리 평균 (m)
+| 그룹 | n | actual future | constant velocity | LSTM | LSTM + rotation aug | LSTM heading | LSTM residual | LSTM heading + residual |
+| :--- | --: | --: | --: | --: | --: | --: | --: | --: |
+| hotel | 580 | 0.071 | 0.223 | 0.315 | 0.365 | 0.370 | 0.272 | 0.323 |
+| all scenes | 9,554 | 0.324 | 0.228 | 0.262 | 0.285 | 0.303 | 0.248 | 0.296 |
+
+### 실제 4.8 s 이동 거리의 등속 이동 거리에 대한 기울기 (마지막 관측 변위 >= 0.08 m)
+| 장면 | test 기울기 (n) | train 기울기 (n) |
+| :--- | --: | --: |
+| eth | 0.61 (133) | 0.86 (21,101) |
+| hotel | 1.08 (493) | 0.85 (20,778) |
+| univ | 0.77 (17,738) | 0.88 (6,186) |
+| zara1 | 0.88 (2,074) | 0.84 (19,419) |
+| zara2 | 0.90 (2,896) | 0.84 (18,874) |
+
+### 속도를 k 배로 줄인 등속 모델의 test ADE (m)
+| k | eth | hotel | univ | zara1 | zara2 | AVG |
+| --: | --: | --: | --: | --: | --: | --: |
+| 1.0 | 0.995 | 0.323 | 0.524 | 0.431 | 0.326 | 0.520 |
+| 0.9 | 0.933 | 0.331 | 0.507 | 0.483 | 0.341 | 0.519 |
+| 0.88 | 0.934 | 0.339 | 0.509 | 0.510 | 0.352 | 0.529 |
+| 0.85 | 0.942 | 0.354 | 0.514 | 0.556 | 0.372 | 0.548 |
+| 0.8 | 0.972 | 0.384 | 0.531 | 0.644 | 0.411 | 0.588 |
+
+saved docs/figures/all_*.png, results/analysis/all_*.csv

@@ -1,9 +1,9 @@
 """여러 시드로 돌린 LSTM 결과를 모아 장면별 평균 ± 표준편차 표를 만든다.
 
-입력 : results/lstm/<augment>_seed<seed>.csv   (scripts/train_lstm.py 출력)
+입력 : results/lstm/<condition>_seed<seed>.csv  (scripts/train_lstm.py 출력. 시드 파일이 다 없는 조건은 건너뛴다)
        results/cv.csv                           (등속 모델, 비교용)
 출력 : results/lstm/summary.csv
-       화면에 README 용 마크다운 표
+       화면에 README 용 마크다운 표 (ADE 표, FDE 표)
 
 표준편차는 시드 간 표본 표준편차(n-1 로 나눔)다.
 AVG 행은 시드마다 5개 장면 평균을 먼저 구한 뒤, 그 값들의 평균 ± 표준편차다.
@@ -19,7 +19,14 @@ import numpy as np
 
 from trajpred.data import SCENES
 
-AUGMENTS = ['none', 'rotate']
+# (run 이름 앞부분, 표에 쓸 이름)
+CONDITIONS = [
+    ('none', '증강 없음'),
+    ('rotate', '회전 증강'),
+    ('none_heading', 'heading'),
+    ('none_residual', 'residual'),
+    ('none_heading_residual', 'heading + residual'),
+]
 ROWS = SCENES + ['AVG']
 
 
@@ -38,32 +45,36 @@ def main():
     folder = Path(args.dir)
 
     cv = read_run(args.cv)
-    # stats[augment][scene] = (ade 평균, ade 표준편차, fde 평균, fde 표준편차)
+    # stats[condition][scene] = (ade 평균, ade 표준편차, fde 평균, fde 표준편차)
     stats = {}
-    for augment in AUGMENTS:
-        runs = [read_run(folder / f'{augment}_seed{seed}.csv') for seed in args.seeds]
-        stats[augment] = {}
+    for condition, _ in CONDITIONS:
+        paths = [folder / f'{condition}_seed{seed}.csv' for seed in args.seeds]
+        if not all(p.exists() for p in paths):
+            print(f'건너뜀: {condition} (시드 파일이 다 있지 않다)')
+            continue
+        runs = [read_run(p) for p in paths]
+        stats[condition] = {}
         for scene in ROWS:
             values = np.array([run[scene] for run in runs])     # [시드 수, 2]  (ade, fde)
             mean, std = values.mean(axis=0), values.std(axis=0, ddof=1)
-            stats[augment][scene] = (mean[0], std[0], mean[1], std[1])
+            stats[condition][scene] = (mean[0], std[0], mean[1], std[1])
 
     with open(folder / 'summary.csv', 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['scene', 'augment', 'n_seeds', 'ade_mean', 'ade_std', 'fde_mean', 'fde_std'])
+        writer.writerow(['scene', 'condition', 'n_seeds', 'ade_mean', 'ade_std', 'fde_mean', 'fde_std'])
         for scene in ROWS:
-            for augment in AUGMENTS:
-                writer.writerow([scene, augment, len(args.seeds)] + [f'{v:.4f}' for v in stats[augment][scene]])
+            for condition in stats:
+                writer.writerow([scene, condition, len(args.seeds)] + [f'{v:.4f}' for v in stats[condition][scene]])
 
-    print(f'seeds {args.seeds}  (ADE / FDE, m, 평균 ± 표준편차)\n')
-    print('| 장면 | 등속 ADE / FDE | LSTM 증강 없음 ADE | FDE | LSTM 회전 증강 ADE | FDE |')
-    print('| :--- | :-: | :-: | :-: | :-: | :-: |')
-    for scene in ROWS:
-        cells = [f'{cv[scene][0]:.3f} / {cv[scene][1]:.3f}']
-        for augment in AUGMENTS:
-            a_mean, a_std, f_mean, f_std = stats[augment][scene]
-            cells += [f'{a_mean:.3f} ± {a_std:.3f}', f'{f_mean:.3f} ± {f_std:.3f}']
-        print(f'| {scene} | ' + ' | '.join(cells) + ' |')
+    labels = dict(CONDITIONS)
+    for metric, col, cv_col in (('ADE', 0, 0), ('FDE', 2, 1)):
+        print(f'\n{metric} (m), LSTM 은 시드 {args.seeds} 평균 ± 표준편차\n')
+        print('| 장면 | 등속 | ' + ' | '.join(labels[c] for c in stats) + ' |')
+        print('| :--- | :-: |' + ' :-: |' * len(stats))
+        for scene in ROWS:
+            cells = [f'{cv[scene][cv_col]:.3f}']
+            cells += [f'{stats[c][scene][col]:.3f} ± {stats[c][scene][col + 1]:.3f}' for c in stats]
+            print(f'| {scene} | ' + ' | '.join(cells) + ' |')
     print(f'\nsaved {folder / "summary.csv"}')
 
 
