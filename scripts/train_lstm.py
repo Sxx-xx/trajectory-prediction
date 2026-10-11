@@ -175,8 +175,10 @@ def load_cv(path):
 
 
 def plot_curves(history, best_epochs, path, run):
-    fig, axes = plt.subplots(1, len(SCENES), figsize=(3.2 * len(SCENES), 3.4), sharey=True)
-    for ax, scene in zip(axes, SCENES):
+    scenes = [s for s in SCENES if s in best_epochs]      # --scenes 로 일부만 돌린 경우
+    fig, axes = plt.subplots(1, len(scenes), figsize=(3.2 * len(scenes), 3.4), sharey=True, squeeze=False)
+    axes = axes[0]
+    for ax, scene in zip(axes, scenes):
         rows = [h for h in history if h['scene'] == scene]
         epochs = [h['epoch'] for h in rows]
         ax.plot(epochs, [h['train_loss'] for h in rows], '-', color=TRAIN_COLOR, lw=2)

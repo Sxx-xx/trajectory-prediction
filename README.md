@@ -9,7 +9,7 @@ ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 �
 | A | 오차 분석: 오차 분해, heading 정규화, residual ([분석](docs/analysis.md), [노트](docs/notes/A_analysis.md)) | 완료 |
 | B | 상호작용: 같은 프레임 이웃의 grid pooling ([분석](docs/interaction.md), [노트](docs/notes/B_interaction.md)) | 완료 |
 | C | Transformer: 시간축 self-attention + 이웃 cross-attention ([분석](docs/transformer.md), [노트](docs/notes/C_transformer.md)) | 완료 |
-| D | Multimodal: K=20 예측, best-of-20 | 예정 |
+| D | Multimodal: K=20 예측, best-of-20, 논문 표 비교 ([분석](docs/multimodal.md), [노트](docs/notes/D_multimodal.md)) | 완료 |
 | E | Argoverse 2로 차량 확장 | 예정 |
 
 단계별 목표와 완료 기준은 [docs/ROADMAP.md](docs/ROADMAP.md)에 있다.
@@ -238,6 +238,38 @@ AVG의 LSTM 값은 시드마다 5개 장면 평균을 먼저 구한 뒤 그 평�
 - hotel의 정지 보행자는 실제로 4.8 s에 7 cm만 움직이는데, LSTM은 27~37 cm를 움직이게 예측한다.
 - hotel 보행자는 관측 속도를 유지한다(실제 이동 거리의 등속 이동 거리 대비 기울기 1.08). 학습 장면은 약 0.85이고, LSTM은 속도를 0.88 정도로 줄여 예측한다.
 
+## 결과: 다중 예측 (K=20, best-of-20)
+
+미래를 20개 내는 Transformer(heading, residual, winner-takes-all 손실)를 학습하고, 20개 중 실제와 가장 가까운 예측의 오차(minADE₂₀ / minFDE₂₀)로 평가했다. 기준선은 등속 예측의 방향에 잡음을 넣어 20개를 만든 것이다. 자세한 내용과 논문 표 비교는 [docs/multimodal.md](docs/multimodal.md)에 있다.
+
+```bash
+.venv/bin/python -m unittest discover tests
+.venv/bin/python scripts/eval_cv_sampling.py
+for s in 0 1 2; do
+  .venv/bin/python scripts/train_multimodal.py --modes 20 --residual --seed $s
+  .venv/bin/python scripts/train_multimodal.py --modes 20 --residual --social --seed $s
+done
+.venv/bin/python scripts/summarize_multimodal.py
+```
+
+AVG minADE_k / minFDE_k (m), 시드 0, 1, 2의 평균 ± 표본 표준편차
+
+| 방법 | k = 1 | k = 5 | k = 20 |
+| :--- | :-: | :-: | :-: |
+| 등속 (결정적) | 0.520 / 1.141 | — | — |
+| 등속 + 방향 잡음 σ=25° | 0.911 ± 0.011 / 1.786 ± 0.016 | 0.495 ± 0.004 / 1.028 ± 0.003 | 0.404 ± 0.001 / 0.851 ± 0.002 |
+| 등속 속력 + 무작위 방향 | 2.488 ± 0.067 / 4.571 ± 0.112 | 1.128 ± 0.009 / 2.136 ± 0.009 | 0.541 ± 0.002 / 1.090 ± 0.005 |
+| Transformer K=20 | 0.531 ± 0.003 / 1.152 ± 0.004 | 0.380 ± 0.001 / 0.795 ± 0.002 | **0.216 ± 0.001** / **0.371 ± 0.006** |
+| Transformer K=20 + 이웃 attention | 0.529 ± 0.006 / 1.154 ± 0.009 | **0.356 ± 0.010** / **0.743 ± 0.025** | 0.221 ± 0.001 / 0.392 ± 0.011 |
+
+![k에 따른 AVG minADE_k / minFDE_k](docs/figures/D_k_curve.png)
+
+- **K=20 Transformer는 minADE₂₀ / minFDE₂₀ 0.216 / 0.371이다.** 등속 + σ=25° 잡음(0.404 / 0.851)의 약 절반이고, 모든 k에서 기준선보다 낮다.
+- **best-of-20은 관대하다.** 관측 방향을 버리고 방향을 무작위로 20번 뽑아도 FDE가 1.090으로 결정적 등속(1.141)보다 낮다. 등속 + σ=25° 잡음은 Social GAN 논문 값(20V-20: 0.58 / 1.18, Table 1)보다도 낮다.
+- **점수 1위 하나(k = 1)는 등속 수준이다**(0.529~0.531 / 1.152~1.154). 단일 예측 모델(0.505 / 1.094)보다 나쁘다.
+- 이웃 attention은 k = 5에서 도움이 되고(0.356 대 0.380), k = 20에서는 아니다.
+- Trajectron++ 논문 값(0.19 / 0.41, Table 2b)과 비슷한 수준이다. 학습 설정이 달라 우열을 말하기는 어렵다.
+
 ## 코드 구조
 
 ```
@@ -251,23 +283,30 @@ scripts/
   analyze_attention.py Transformer 이웃 attention 분석 (가중치 통계, 이웃 지우기 시험, 예시 그림)
   analyze_errors.py    오차 분해 (스텝별, 방향 전환 각도별, 속력별, 이웃 수별, hotel 차이 분해)
   compare_bins.py      시드별 오차 분해 -> 묶음별 평균 ± 표준편차
+  train_multimodal.py  K개 예측 Transformer 학습 (winner-takes-all), k = 1..K 의 minADE / minFDE
+  eval_cv_sampling.py  등속 + 방향 잡음 기준선 (K = 20)
+  summarize_multimodal.py  다중 예측 표, 모드 사용 진단, k 곡선 · 예시 그림
+tests/
+  test_metrics.py      ADE / FDE / minADE / minFDE / top-k 테스트 (unittest)
 src/trajpred/
   data.py              파일 읽기, 8 -> 12 윈도우 데이터셋, leave-one-out 분할, 같은 프레임 이웃
-  metrics.py           ADE, FDE
+  metrics.py           ADE, FDE, minADE_K, minFDE_K, top-k
   models/
     constant_velocity.py
     lstm.py            Vanilla LSTM encoder-decoder (autoregressive, heading frame, residual, grid pooling)
-    transformer.py     Transformer (시간축 self-attention, non-autoregressive, 이웃 cross-attention)
+    transformer.py     Transformer (시간축 self-attention, non-autoregressive, 이웃 cross-attention, residual, K개 출력)
 results/
   cv.csv, cv_examples.png
   lstm/                <run>.csv, _history.csv, _curves.png, summary.csv
   lstm/social_sweep/   social pooling 설정 비교 (시드 0, val 로 선택) · 과적합 진단 로그
   analysis/            오차 분해 표 (csv, 실행 출력)
+  multimodal/          다중 예측 결과 (<run>.csv, _kcurve.csv, cv_sampling.csv, summary.csv)
 docs/
   ROADMAP.md           단계별 계획
   analysis.md          A단계 오차 분석
   interaction.md       B단계 이웃 정보 (grid pooling)
   transformer.md       C단계 Transformer와 이웃 attention
+  multimodal.md        D단계 다중 예측, best-of-20, 논문 표 비교
   figures/             analysis.md 그림
   notes/               단계별 공부 노트
 checkpoints/           best 모델 (git 에 넣지 않는다)

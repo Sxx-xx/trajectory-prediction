@@ -1,6 +1,6 @@
 # 로드맵
 
-지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석, B단계 grid pooling, C단계 Transformer · 이웃 attention. 자세한 내용은 [README](../README.md)에 있다.
+지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석, B단계 grid pooling, C단계 Transformer · 이웃 attention, D단계 다중 예측(K=20). 자세한 내용은 [README](../README.md)에 있다.
 
 모든 단계에 공통으로 적용하는 규칙은 다음과 같다.
 
@@ -111,14 +111,22 @@
 3. Social GAN, Trajectron++ 등의 논문 표 값을 **원 논문 표에서 직접 확인해** 옮기고, 평가 프로토콜 차이(샘플 규칙, K, 정규화)를 적는다.
 4. best-of-K 지표의 한계(K가 크면 무작위 예측도 좋아 보임)를 실험으로 보여 준다. 예: K를 1, 5, 20으로 바꿔 등속 + 잡음 기준선과 비교한다.
 
+**실제로 한 것** (2026-10-11)
+
+- 1번은 (a) K개 출력 + winner-takes-all을 골랐다. C단계 Transformer(heading, residual)의 출력만 20개로 늘리고, 모드 점수 MLP를 더했다. 이웃 없음 / 이웃 attention 두 가지를 시드 3개씩 돌렸다. CVAE · GAN은 하지 않았다.
+- 2번 기준선은 방향 잡음만 넣었다(속도 잡음은 넣지 않았다). σ=25°(Schöller et al.), train에서 고른 σ, 균등 무작위 방향 세 가지다.
+- 3번은 Social GAN Table 1, Trajectron++ Table 2, Schöller et al. Table I를 원 논문 PDF에서 옮겼다.
+- 4번은 k = 1..20 전체 곡선으로 그렸다. 무작위 방향 20개도 FDE가 결정적 등속보다 낮아진다.
+- 결과: AVG minADE₂₀ / minFDE₂₀ 0.216 / 0.371(이웃 없음). 자세한 내용은 [multimodal.md](multimodal.md)에 있다.
+
 **완료 기준**
 
-- [ ] minADE₂₀ / minFDE₂₀ 평가 코드와 테스트
-- [ ] 다중 예측 모델 시드 3개의 결과와 논문 표 비교(출처 표 번호 명시)
-- [ ] K에 따른 지표 변화 그림
-- [ ] `docs/notes/D_multimodal.md`
+- [x] minADE₂₀ / minFDE₂₀ 평가 코드와 테스트 (`tests/test_metrics.py`)
+- [x] 다중 예측 모델 시드 3개의 결과와 논문 표 비교(출처 표 번호 명시) ([multimodal.md 3절](multimodal.md#3-논문-표와-비교))
+- [x] K에 따른 지표 변화 그림 (`docs/figures/D_k_curve.png`)
+- [x] `docs/notes/D_multimodal.md`
 
-**예상 소요**: 10~15시간
+**예상 소요**: 10~15시간. 학습 6회는 3개씩 동시에 돌려 약 1시간 걸렸다.
 
 ---
 

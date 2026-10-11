@@ -27,3 +27,26 @@ def ade(pred, gt):
 def fde(pred, gt):
     """샘플별 FDE. pred, gt: [N, T, 2] -> [N]"""
     return displacement(pred, gt)[:, -1]
+
+
+# ---------------------------------------------------------------------------
+# 다중 예측 (D단계). 샘플마다 K개 예측 중 실제와 가장 가까운 것의 오차를 쓴다 (best-of-K).
+#   minADE_K = min_k ADE(pred_k, gt),   minFDE_K = min_k FDE(pred_k, gt)
+# Social GAN 등과 같이 ADE 와 FDE 의 최솟값을 각각 따로 고른다
+# (minADE 를 주는 예측과 minFDE 를 주는 예측이 다를 수 있다).
+# ---------------------------------------------------------------------------
+
+def min_ade(preds, gt):
+    """preds: [N, K, T, 2], gt: [N, T, 2] -> [N]"""
+    return displacement(preds, gt[:, None]).mean(dim=-1).min(dim=1).values
+
+
+def min_fde(preds, gt):
+    """preds: [N, K, T, 2], gt: [N, T, 2] -> [N]"""
+    return displacement(preds, gt[:, None])[..., -1].min(dim=1).values
+
+
+def top_k(preds, scores, k):
+    """점수가 높은 순서로 k개 예측만 남긴다. preds: [N, K, T, 2], scores: [N, K] -> [N, k, T, 2]"""
+    idx = scores.topk(k, dim=1).indices                           # [N, k]
+    return preds.gather(1, idx[:, :, None, None].expand(-1, -1, *preds.shape[2:]))
