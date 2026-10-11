@@ -1,6 +1,47 @@
 # trajectory-prediction
 
-ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 모델을 비교하고, 이후 Argoverse 2 차량 데이터로 넓히는 공부용 저장소다.
+ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 모델을 비교한 공부용 저장소다. A~D단계로 마무리했다. 차량 쪽은 별도 저장소(dilemma-zone-prediction)에서 딜레마존 연구로 진행한다.
+
+## 프로젝트 요약
+
+**목표**: 과거 3.2 s(8스텝)를 보고 미래 4.8 s(12스텝)를 예측한다. 5개 장면 leave-one-out으로 평가하고, 단순하지만 강한 **등속 모델(AVG ADE / FDE 0.520 / 1.141 m)을 학습 모델이 언제, 왜 이기는지** 확인한다. 모든 수치는 이 저장소에서 실제로 실행한 값이고, 학습 모델은 시드 0, 1, 2의 평균 ± 표준편차다.
+
+**최종 결과** (AVG, m, 낮을수록 좋음)
+
+| 모델 | 예측 수 | ADE | FDE |
+| :--- | :-: | :-: | :-: |
+| 등속 | 1 | 0.520 | 1.141 |
+| LSTM encoder-decoder | 1 | 0.568 ± 0.005 | 1.202 ± 0.017 |
+| LSTM + heading frame | 1 | 0.531 ± 0.009 | 1.112 ± 0.015 |
+| Transformer + 이웃 attention | 1 | 0.537 ± 0.003 | **1.059 ± 0.005** |
+| Transformer + 이웃 attention + residual | 1 | **0.505 ± 0.006** | 1.094 ± 0.013 |
+| 등속 + 방향 잡음 σ=25° (best-of-20) | 20 | 0.404 ± 0.001 | 0.851 ± 0.002 |
+| Transformer K=20 (best-of-20) | 20 | **0.216 ± 0.001** | **0.371 ± 0.006** |
+
+![모델별 AVG ADE / FDE](results/figures/model_comparison.png)
+
+**핵심 발견**
+
+1. **등속 모델은 강하다.** 처음 만든 LSTM은 ADE · FDE 모두 등속에 졌다. 원인의 대부분은 hotel 장면이었다. 학습 장면과 진행 방향 분포가 달라서 LSTM이 방향을 틀어 예측했다. heading frame(진행 방향 정규화)이나 회전 증강으로 이 방향 편향을 풀었다([A단계](docs/analysis.md)).
+2. **이웃 정보는 표현 방식에 따라 결과가 갈렸다.** 같은 이웃 정보라도 grid pooling은 학습 데이터를 외워 효과가 없었다. 이웃 cross-attention은 15° 이상 꺾는 보행자의 오차를 크게 줄였다(45°+: 1.556 → 1.398). 섞은 이웃 대조 실험으로 개선이 진짜 이웃 정보에서 온다는 것을 확인했다([B](docs/interaction.md), [C단계](docs/transformer.md)).
+3. **등속을 기본값으로 주니 ADE · FDE 둘 다 등속을 이겼다.** 이웃 attention만 쓰면 첫 스텝 · 혼자인 보행자에서 손해를 봤다. "등속 예측 + 보정량"(residual)으로 바꾸자 이 손해가 사라져 AVG 0.505 / 1.094가 됐다. attention 가중치는 가까운 이웃에 몰리지 않았다. 이웃을 지우는 시험을 해야 실제 의존도가 보였다(attention ≠ 설명).
+4. **best-of-20은 관대한 지표다.** 방향을 무작위로 20번 뽑은 등속 예측도 FDE가 결정적 등속보다 낮고, 25° 잡음 등속은 Social GAN 논문 값보다 낮다. K=20 Transformer(0.216 / 0.371)는 이런 기준선의 약 절반이다([D단계](docs/multimodal.md)).
+
+![꺾는 보행자 예측 예시](results/figures/turning_examples.png)
+
+장면마다 관측 속력 0.5 m/s 이상, 실제 미래가 30° 넘게 꺾고 4 m 안에 이웃이 있는 test 샘플을 무작위로 하나씩 골랐다(모델 성능으로 고르지 않음, 시드 0 모델).
+
+![best-of-k 지표의 한계](results/figures/best_of_k.png)
+
+**한계**
+
+- **hotel은 끝까지 등속을 넘지 못했다**(최선 0.333, 등속 0.323). 서 있는 보행자를 움직이게 예측하는 문제가 남았다(관측 속력 0.2 m/s 미만 샘플에서 C단계 Transformer 세 가지가 모두 등속보다 나쁘다).
+- **데이터가 작다.** 장면이 5개뿐이고 test 장면마다 샘플 수 차이가 크다(eth 181개 ~ univ 24,334개). leave-one-out이라 val과 test의 장면 분포가 다르고, early stopping 기준과 평가가 어긋난다.
+- **장면 정보(지도, 장애물)를 쓰지 않는다.** 이웃 attention이 먼 이웃까지 보는 것은 걸을 수 있는 길을 대신 추론하는 것일 수 있지만 확인하지 않았다.
+- **다중 예측은 best-of-K와 k = 1만 쟀다.** 확률 지표(NLL)는 재지 않았다. 점수 1위 하나는 단일 예측 모델보다 나쁘다(0.529 대 0.505). 논문 값과는 학습 설정이 달라 우열을 주장하지 않는다.
+- 하이퍼파라미터는 거의 기본값이다. grid pooling 설정만 val로 골랐다.
+
+## 단계
 
 | 단계 | 내용 | 상태 |
 | :-: | :--- | :--- |
@@ -10,7 +51,7 @@ ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 �
 | B | 상호작용: 같은 프레임 이웃의 grid pooling ([분석](docs/interaction.md), [노트](docs/notes/B_interaction.md)) | 완료 |
 | C | Transformer: 시간축 self-attention + 이웃 cross-attention ([분석](docs/transformer.md), [노트](docs/notes/C_transformer.md)) | 완료 |
 | D | Multimodal: K=20 예측, best-of-20, 논문 표 비교 ([분석](docs/multimodal.md), [노트](docs/notes/D_multimodal.md)) | 완료 |
-| E | Argoverse 2로 차량 확장 | 예정 |
+| E | Argoverse 2로 차량 확장 | 별도 저장소로 이동 (dilemma-zone-prediction) |
 
 단계별 목표와 완료 기준은 [docs/ROADMAP.md](docs/ROADMAP.md)에 있다.
 
@@ -286,6 +327,7 @@ scripts/
   train_multimodal.py  K개 예측 Transformer 학습 (winner-takes-all), k = 1..K 의 minADE / minFDE
   eval_cv_sampling.py  등속 + 방향 잡음 기준선 (K = 20)
   summarize_multimodal.py  다중 예측 표, 모드 사용 진단, k 곡선 · 예시 그림
+  make_portfolio_figures.py  README 요약용 대표 그림 3장
 tests/
   test_metrics.py      ADE / FDE / minADE / minFDE / top-k 테스트 (unittest)
 src/trajpred/
@@ -301,6 +343,7 @@ results/
   lstm/social_sweep/   social pooling 설정 비교 (시드 0, val 로 선택) · 과적합 진단 로그
   analysis/            오차 분해 표 (csv, 실행 출력)
   multimodal/          다중 예측 결과 (<run>.csv, _kcurve.csv, cv_sampling.csv, summary.csv)
+  figures/             README 요약용 대표 그림 (make_portfolio_figures.py)
 docs/
   ROADMAP.md           단계별 계획
   analysis.md          A단계 오차 분석

@@ -16,8 +16,8 @@
 | A | 오차 분석: 오차 분해, heading 정규화, residual | 완료 ([분석](analysis.md), [노트](notes/A_analysis.md)) |
 | B | 상호작용: 주변 보행자 정보, Social Pooling 간단 버전 | 완료 ([분석](interaction.md), [노트](notes/B_interaction.md)) |
 | C | Transformer: 시간축 + 보행자 간 attention | 완료 ([분석](transformer.md), [노트](notes/C_transformer.md)) |
-| D | Multimodal: K=20 예측, best-of-20, 논문 표와 비교 | 예정 |
-| E | Argoverse 2로 차량 확장 | 예정 |
+| D | Multimodal: K=20 예측, best-of-20, 논문 표와 비교 | 완료 ([분석](multimodal.md), [노트](notes/D_multimodal.md)) |
+| E | Argoverse 2로 차량 확장 | 별도 저장소(dilemma-zone-prediction)로 이동 |
 
 ---
 
@@ -130,23 +130,6 @@
 
 ---
 
-## E. Argoverse 2 Motion Forecasting 일부로 차량 확장
+## E. Argoverse 2 차량 확장 → 별도 저장소로 이동
 
-**목표**: 보행자에서 만든 파이프라인을 차량 데이터로 넓힌다. 8 GB GPU와 노트북 디스크로 감당할 수 있는 부분집합만 쓴다.
-
-**할 일**
-
-1. 데이터: Argoverse 2 Motion Forecasting에서 train · val 일부(예: 수천~1만 시나리오)만 받는다. 받기 전에 라이선스와 이용 조건을 확인해 README에 적는다. 이 저장소에는 데이터를 넣지 않는다.
-2. 문제 설정은 AV2 표준(과거 5 s, 미래 6 s, 10 Hz)을 따른다. focal agent만 예측한다.
-3. 기준선: 등속 모델, A~C 중 가장 좋은 모델(지도 정보 없이). 지표는 AV2 표준(minADE₆, minFDE₆, miss rate)과 K=1 ADE/FDE.
-4. 지도 정보(차선 중심선)를 간단히 넣는 실험: 가까운 차선 중심선 몇 개를 벡터로 인코딩해 붙인다(VectorNet 계열의 아주 작은 버전). 메모리가 허용하는 범위에서만 한다.
-5. 보행자 대비 차량에서 등속 모델이 얼마나 강하고 약한지를 A와 같은 오차 분해로 비교한다.
-
-**완료 기준**
-
-- [ ] 부분집합 다운로드 스크립트(시나리오 수 · 디스크 사용량 명시)와 데이터 로더
-- [ ] 등속, 지도 없는 학습 모델, (가능하면) 간단한 지도 인코딩 모델의 결과표. 공식 리더보드 값과는 데이터 규모가 달라 직접 비교하지 않는다고 명시
-- [ ] 차량 vs 보행자 오차 분해 비교
-- [ ] `docs/notes/E_argoverse2.md`
-
-**예상 소요**: 15~25시간(데이터 준비에 따라 크게 달라짐)
+이 저장소에서는 하지 않는다. 차량 쪽은 별도 저장소(dilemma-zone-prediction)에서 딜레마존 연구로 진행한다. 이 저장소는 A~D단계로 마무리했다(요약은 [README](../README.md#프로젝트-요약)).
