@@ -5,7 +5,7 @@ ETH/UCY 보행자 궤적 데이터로 **등속 · LSTM · Transformer** 예측 �
 | 단계 | 내용 | 상태 |
 | :-: | :--- | :--- |
 | 1 | 환경, 데이터 파이프라인, ADE/FDE, 등속 모델 기준선 | 완료 |
-| 2 | LSTM | 예정 |
+| 2 | Vanilla LSTM encoder-decoder | 완료 |
 | 3 | Transformer | 예정 |
 | 4 | Argoverse 2 차량 데이터로 확장 | 예정 |
 
@@ -120,10 +120,61 @@ obs, fut, origin = ds[0]   # [8, 2], [12, 2], [2]
 | Schöller et al. 2020, Table I | 0.58 / 1.15 | 0.27 / 0.51 | 0.46 / 1.02 | 0.34 / 0.76 | 0.31 / 0.69 | 0.39 / 0.83 |
 | 이 저장소 | 0.995 / 2.234 | 0.323 / 0.617 | 0.524 / 1.165 | 0.431 / 0.960 | 0.326 / 0.728 | 0.520 / 1.141 |
 
+**속도 계산 방식은 같다.** 논문 PDF(arXiv 1903.07933) IV절에서 직접 확인했다.
+
+| | 속도 | 예측 |
+| :--- | :--- | :--- |
+| Schöller et al. 2020, 식 (3) | $\Delta_i = p_i^t - p_i^{t-1}$ ("observed from the latest two timesteps") | 변위 $(\Delta_i, \dots, \Delta_i)$를 12번 이어 붙인다 |
+| 이 저장소 (`constant_velocity.py`) | `v = obs[-1] - obs[-2]` | `pred[k] = obs[-1] + (k+1) * v` |
+
+두 식은 같은 예측을 낸다(변위를 누적하면 $p^t + (k+1)\Delta$). 필터링이나 관측 구간 평균을 쓰지 않으므로 둘 다 측정 잡음에 민감하다고 논문도 적었다. 따라서 아래 수치 차이는 속도 계산이 아니라 다른 데서 온다.
+
 모든 장면에서 이 저장소의 값이 더 크고, eth에서 차이가 가장 크다. 확인한 차이는 두 가지다.
 
 1. **평가 샘플 규칙이 다르다.** 그 논문은 "길이가 10보다 짧은 잘린 궤적을 버린다(we reject sliced trajectories with a length shorter than 10)"고 적었다. 즉 미래가 12스텝보다 짧은 궤적도 평가에 들어간다. 이 저장소는 Social-GAN 규칙대로 20스텝이 다 있는 궤적만 쓴다. 예측 거리가 짧은 샘플이 섞이면 평균 오차는 작아진다.
 2. **eth 장면의 보행 속도가 유난히 크다.** 이 파일에서 보행자가 한 스텝(0.4 s)에 움직이는 평균 거리는 eth 0.95 m(약 2.4 m/s)이고, hotel 0.46 m, zara1 0.46 m, univ(students001) 0.29 m다. 등속 모델의 오차는 속도에 비례해 커지므로 eth 값이 크게 나온다. 같은 파일을 쓴 그 논문의 eth 값이 왜 이보다 작은지는 데이터 처리 방식을 알 수 없어 확인하지 못했다.
+
+## 결과: Vanilla LSTM encoder-decoder
+
+주변 보행자를 보지 않는 단일 보행자 모델이다(`src/trajpred/models/lstm.py`).
+
+- **입출력**: 위치 대신 한 스텝 변위 `obs[t] - obs[t-1]`을 쓴다. 관측 8점에서 변위 7개가 나온다.
+- **인코더**: 변위 → `Linear(2, 64) + ReLU` → `LSTM(64, 128)`. 마지막 상태 `(h, c)`를 디코더에 넘긴다.
+- **디코더(autoregressive)**: `LSTMCell(64, 128)`을 12번 돌린다. 스텝마다 `Linear(128, 2)`로 다음 변위를 내고, 그 **자기 예측**을 다음 스텝 입력으로 넣는다. 첫 입력은 마지막 관측 변위다. 학습 때도 정답을 넣지 않는다(teacher forcing 없음).
+- **위치**: 마지막 관측점 + 예측 변위의 누적합.
+- **학습**: 손실은 예측 위치의 MSE. Adam(lr 1e-3), 배치 64, 기울기 노름 1.0으로 자르기, 시드 0. 데이터 증강(회전 등)은 쓰지 않았다.
+- **검증 · early stopping**: `data/raw/<scene>/val`(test 장면을 뺀 4개 장면의 검증 구간)에서 에폭마다 ADE를 잰다. 20 에폭 동안 좋아지지 않으면 멈추고, val ADE가 가장 낮았던 모델을 `checkpoints/lstm_<scene>.pt`에 저장한다. test 분할은 학습과 모델 선택에 쓰지 않고, 저장한 best 모델로 마지막에 한 번만 평가한다.
+
+```bash
+.venv/bin/python scripts/train_lstm.py   # -> results/lstm.csv, lstm_history.csv, lstm_curves.png, checkpoints/
+```
+
+RTX 4070 Laptop에서 에폭당 약 2.5 s, 5개 분할 전체가 약 7분 걸렸다. 아래는 그 한 번(시드 0)의 실행값이다. GPU 연산의 비결정성 때문에 다시 돌리면 소수 셋째 자리가 조금 달라질 수 있다. 시드를 바꾼 반복 실험은 하지 않았다.
+
+| 장면 | test 샘플 | best epoch | 등속 ADE | 등속 FDE | LSTM ADE | LSTM FDE |
+| :--- | --: | --: | --: | --: | --: | --: |
+| eth | 181 | 21 | 0.995 | 2.234 | **0.933** | **1.936** |
+| hotel | 1,053 | 16 | **0.323** | **0.617** | 0.566 | 1.166 |
+| univ | 24,334 | 32 | **0.524** | 1.165 | 0.537 | **1.164** |
+| zara1 | 2,253 | 24 | **0.431** | **0.960** | 0.440 | 0.962 |
+| zara2 | 5,833 | 26 | **0.326** | 0.729 | 0.336 | 0.729 |
+| **AVG** | | | **0.520** | **1.141** | 0.562 | 1.192 |
+
+(단위 m, 굵은 글씨는 장면별로 더 작은 값)
+
+![LSTM 학습 곡선](results/lstm_curves.png)
+
+- **평균으로는 LSTM이 등속 모델보다 나쁘다.** eth에서만 확실히 낫고, univ · zara1 · zara2는 거의 같으며, hotel에서 크게 진다. Schöller et al.이 지적한 "단순 등속 모델이 학습형 모델과 맞먹는다"는 현상이 이 실험에서도 나타난다.
+- **학습 곡선**: 다섯 분할 모두 val loss가 10~30 에폭 근처에서 평평해지고, 그 뒤로는 train loss만 내려간다(과적합 시작). univ 분할(학습 샘플 9,231개로 가장 적다)에서 train과 val의 간격이 가장 크다.
+
+### hotel에서 LSTM이 지는 이유: 진행 방향 편향
+
+`scripts/diag_lstm_direction.py`로 확인했다.
+
+1. **진행 방향 분포가 다르다.** 20스텝 동안 1 m 이상 움직인 보행자 가운데 x 방향 이동이 더 큰 비율은 hotel 분할의 train(나머지 4개 장면)에서 76%(22,859명 중), hotel test에서 6%(444명 중)다. hotel 보행자는 대부분 y 방향으로 걷는데, 학습 데이터에는 x 방향이 많다.
+2. **입력을 돌리면 오차가 줄어든다.** 학습한 hotel 모델에 test 입력을 90° 단위로 돌려 넣고 예측을 되돌리면 ADE가 0° 0.566, 90° 0.367, 180° 0.584, 270° 0.370이다. 학습 때 많이 본 방향(x)으로 돌려 주면 오차가 크게 준다. 즉 모델이 좌표축 방향에 맞춰져 있다. 비교로 eth(test의 98%가 x 방향)는 돌리지 않은 0°가 0.933으로 가장 좋다.
+
+등속 모델은 회전과 무관해서 이 문제가 없다. 학습 때 궤적을 무작위로 회전하는 증강을 넣으면 줄어들 것으로 예상하지만 아직 실험하지 않았다. 위 회전 시험은 원인 확인용이고, 표의 LSTM 수치에는 쓰지 않았다.
 
 ## 코드 구조
 
@@ -132,11 +183,16 @@ scripts/
   download_data.sh     데이터 받기 (커밋 고정)
   check_gpu.py         CUDA 확인
   eval_cv.py           등속 모델 평가, 표 · 그림 저장
+  train_lstm.py        LSTM 학습 (leave-one-out 5개), early stopping, test 평가, 표 · 학습 곡선 저장
+  diag_lstm_direction.py  LSTM 진행 방향 편향 진단 (hotel)
 src/trajpred/
   data.py              파일 읽기, 8 -> 12 윈도우 데이터셋, leave-one-out 분할
   metrics.py           ADE, FDE
   models/
     constant_velocity.py
+    lstm.py            Vanilla LSTM encoder-decoder (autoregressive)
 results/
   cv.csv, cv_examples.png
+  lstm.csv, lstm_history.csv, lstm_curves.png
+checkpoints/           best 모델 (git 에 넣지 않는다)
 ```

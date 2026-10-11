@@ -7,3 +7,6 @@ data/raw/
 # 파이썬 캐시 · 패키지 메타데이터
 __pycache__/
 *.egg-info/
+
+# 학습한 모델 (scripts/train_lstm.py 로 다시 만든다)
+checkpoints/
