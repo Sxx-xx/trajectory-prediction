@@ -1,0 +1,6 @@
+# PyTorch 는 CUDA 12.8 빌드를 받는다:
+#   pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0
+numpy==2.5.4
+matplotlib==3.11.2
