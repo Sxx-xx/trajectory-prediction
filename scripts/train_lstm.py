@@ -7,9 +7,10 @@
        --augment rotate 이면 학습 배치마다 궤적을 무작위 각도로 회전한다 (val, test 는 그대로)
        --frame heading  이면 진행 방향 정규화 좌표로 예측한다 (모델 안에서 처리, 학습 · 평가 모두)
        --residual       이면 등속 예측에 더할 보정량을 예측한다
+       --social         이면 같은 프레임 이웃을 격자에 모아 인코더에 넣는다 (grid pooling)
     3. 저장한 best 모델로 data/raw/<scene>/test 에서 ADE/FDE 를 잰다
 
-출력 (<run> = <augment>[_heading][_residual]_seed<seed>, 예: rotate_seed0, none_heading_residual_seed1)
+출력 (<run> = <augment>[_heading][_residual][_social]_seed<seed>, 예: rotate_seed0, rotate_heading_social_seed1)
     checkpoints/lstm_<run>_<scene>.pt   : best 모델 (state_dict 와 설정)
     results/lstm/<run>.csv              : 장면별 test ADE/FDE 와 평균
     results/lstm/<run>_history.csv      : 에폭별 train/val loss, val ADE
@@ -19,6 +20,7 @@
     .venv/bin/python scripts/train_lstm.py --augment none --seed 0
     .venv/bin/python scripts/train_lstm.py --augment rotate --seed 0
     .venv/bin/python scripts/train_lstm.py --frame heading --residual --seed 0
+    .venv/bin/python scripts/train_lstm.py --frame heading --augment rotate --social --seed 0
 """
 
 import argparse
@@ -42,19 +44,24 @@ VAL_COLOR = '#eb6834'      # val loss = 주황, 점선
 GRID_COLOR = '#e4e3df'
 
 
-def random_rotate(obs, fut, generator):
+def random_rotate(obs, fut, generator, nbr=None):
     """샘플마다 0~2π 의 무작위 각도로 관측 · 미래 궤적을 함께 회전한다 (학습 데이터 증강).
 
     좌표가 마지막 관측점 기준 상대 좌표이므로 그 점을 중심으로 돈다.
     걷는 방향만 바뀌고 속도 · 곡률 같은 움직임의 모양은 그대로다.
     obs: [B, 8, 2], fut: [B, 12, 2] -> 같은 shape
+    nbr: [B, 8, K, 4] (상대 위치, 속도) 를 주면 같은 각도로 같이 돌린다 (둘 다 벡터)
     """
     theta = torch.rand(obs.shape[0], generator=generator) * 2 * torch.pi    # [B]
     cos, sin = torch.cos(theta), torch.sin(theta)
     rot = torch.stack([torch.stack([cos, -sin], -1),
                        torch.stack([sin, cos], -1)], -2).to(obs.device)    # [B, 2, 2]
     # 점 p (행 벡터) 를 R p 로 돌린다: p @ R^T
-    return obs @ rot.transpose(1, 2), fut @ rot.transpose(1, 2)
+    rot_t = rot.transpose(1, 2)
+    if nbr is None:
+        return obs @ rot_t, fut @ rot_t, None
+    b, t, k, _ = nbr.shape
+    return obs @ rot_t, fut @ rot_t, (nbr.reshape(b, t * k * 2, 2) @ rot_t).reshape(b, t, k, 4)
 
 
 def batches(n, batch_size, shuffle, generator=None):
@@ -63,11 +70,37 @@ def batches(n, batch_size, shuffle, generator=None):
     return order.split(batch_size)
 
 
+def split_tensors(args, scene, split, device):
+    """분할 하나를 GPU 텐서 dict 로. social 이면 이웃도 넣는다.
+
+    obs [N, 8, 2], fut [N, 12, 2], (nbr [N, 8, K, 4], nbr_mask [N, 8, K])
+    """
+    ds = load_split(args.data, scene, split, normalize=True,
+                    max_neighbors=args.max_neighbors if args.social else 0)
+    data = {'obs': ds.obs.to(device), 'fut': ds.fut.to(device)}
+    if args.social:
+        nbr, mask = ds.nbr, ds.nbr_mask
+        if args.neighbor_control == 'shuffle':
+            # 진단용: 이웃 정보를 다른 샘플의 것과 바꿔 의미를 없앤다 (샘플마다 고정된 무작위 입력이 된다)
+            perm = torch.randperm(len(nbr), generator=torch.Generator().manual_seed(args.seed))
+            nbr, mask = nbr[perm], mask[perm]
+        data['nbr'], data['nbr_mask'] = nbr.to(device), mask.to(device)
+    return data
+
+
+def model_inputs(data, idx):
+    """data 에서 idx 샘플만 골라 모델 입력 (obs, nbr, nbr_mask) 으로. 이웃이 없으면 None."""
+    if 'nbr' in data:
+        return data['obs'][idx], data['nbr'][idx], data['nbr_mask'][idx]
+    return data['obs'][idx], None, None
+
+
 @torch.no_grad()
-def predict(model, obs, batch_size=4096):
-    """obs: [N, 8, 2] -> [N, 12, 2]. 메모리를 아끼려고 나눠서 돌린다."""
+def predict(model, data, batch_size=4096):
+    """data['obs']: [N, 8, 2] -> [N, 12, 2]. 메모리를 아끼려고 나눠서 돌린다."""
     model.eval()
-    return torch.cat([model(obs[idx]) for idx in batches(len(obs), batch_size, shuffle=False)])
+    return torch.cat([model(*model_inputs(data, idx))
+                      for idx in batches(len(data['obs']), batch_size, shuffle=False)])
 
 
 def train_scene(scene, args, device):
@@ -75,15 +108,16 @@ def train_scene(scene, args, device):
     torch.manual_seed(args.seed)
     generator = torch.Generator().manual_seed(args.seed)
 
-    # 마지막 관측점 기준 상대 좌표. 데이터 전체가 GPU 메모리에 올라간다 (수만 x 20 x 2 float).
-    train = load_split(args.data, scene, 'train', normalize=True)
-    val = load_split(args.data, scene, 'val', normalize=True)
-    train_obs, train_fut = train.obs.to(device), train.fut.to(device)   # [N, 8, 2], [N, 12, 2]
-    val_obs, val_fut = val.obs.to(device), val.fut.to(device)           # [M, 8, 2], [M, 12, 2]
-    print(f'[{scene}] train {len(train)}  val {len(val)}')
+    # 마지막 관측점 기준 상대 좌표. 데이터 전체가 GPU 메모리에 올라간다
+    # (수만 x 20 x 2 float, social 이면 이웃 수만 x 8 x K x 4 float 추가).
+    train = split_tensors(args, scene, 'train', device)
+    val = split_tensors(args, scene, 'val', device)
+    print(f'[{scene}] train {len(train["obs"])}  val {len(val["obs"])}')
 
     model = LSTMEncoderDecoder(pred_len=12, embed_dim=args.embed_dim, hidden_dim=args.hidden_dim,
-                               frame=args.frame, residual=args.residual).to(device)
+                               frame=args.frame, residual=args.residual, social=args.social,
+                               grid_size=args.grid_size, cell=args.cell,
+                               social_dropout=args.social_dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()   # 예측 위치와 실제 위치의 좌표별 제곱 오차 평균 (m^2)
 
@@ -92,23 +126,24 @@ def train_scene(scene, args, device):
         start = time.time()
         model.train()
         loss_sum = 0.0
-        for idx in batches(len(train_obs), args.batch_size, shuffle=True, generator=generator):
+        for idx in batches(len(train['obs']), args.batch_size, shuffle=True, generator=generator):
             idx = idx.to(device)
-            obs, fut = train_obs[idx], train_fut[idx]       # [B, 8, 2], [B, 12, 2]
+            obs, nbr, nbr_mask = model_inputs(train, idx)   # [B, 8, 2], ([B, 8, K, 4], [B, 8, K])
+            fut = train['fut'][idx]                         # [B, 12, 2]
             if args.augment == 'rotate':
-                obs, fut = random_rotate(obs, fut, generator)
-            pred = model(obs)                               # [B, 12, 2]
+                obs, fut, nbr = random_rotate(obs, fut, generator, nbr)
+            pred = model(obs, nbr, nbr_mask)                # [B, 12, 2]
             loss = loss_fn(pred, fut)
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # 순환 신경망의 기울기 폭주 방지
             optimizer.step()
             loss_sum += loss.item() * len(idx)
-        train_loss = loss_sum / len(train_obs)
+        train_loss = loss_sum / len(train['obs'])
 
-        val_pred = predict(model, val_obs)                  # [M, 12, 2]
-        val_loss = loss_fn(val_pred, val_fut).item()
-        val_ade = ade(val_pred, val_fut).mean().item()
+        val_pred = predict(model, val)                      # [M, 12, 2]
+        val_loss = loss_fn(val_pred, val['fut']).item()
+        val_ade = ade(val_pred, val['fut']).mean().item()
         history.append({'scene': scene, 'epoch': epoch, 'train_loss': train_loss,
                         'val_loss': val_loss, 'val_ade': val_ade})
 
@@ -174,9 +209,18 @@ def main():
     parser.add_argument('--augment', choices=['none', 'rotate'], default='none')
     parser.add_argument('--frame', choices=['world', 'heading'], default='world')
     parser.add_argument('--residual', action='store_true')
+    parser.add_argument('--social', action='store_true', help='같은 프레임 이웃의 grid pooling')
+    parser.add_argument('--max-neighbors', type=int, default=32, help='관측 프레임마다 가까운 이웃 최대 수')
+    parser.add_argument('--grid-size', type=int, default=8, help='격자 한 변의 칸 수')
+    parser.add_argument('--cell', type=float, default=0.75, help='격자 칸 크기 (m)')
+    parser.add_argument('--social-dropout', type=float, default=0.0, help='격자 임베딩 dropout 확률')
+    parser.add_argument('--neighbor-control', choices=['real', 'shuffle'], default='real',
+                        help='진단용. shuffle 이면 이웃을 다른 샘플의 것으로 바꾼다')
+    parser.add_argument('--tag', default='', help='run 이름 뒤에 붙일 이름 (설정 비교용)')
     args = parser.parse_args()
     run = (args.augment + ('_heading' if args.frame == 'heading' else '')
-           + ('_residual' if args.residual else '') + f'_seed{args.seed}')
+           + ('_residual' if args.residual else '') + ('_social' if args.social else '')
+           + (f'_{args.tag}' if args.tag else '') + f'_seed{args.seed}')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('device:', device, ' run:', run)
@@ -192,10 +236,11 @@ def main():
         torch.save({'state_dict': model.state_dict(), 'args': vars(args), 'best_epoch': best_epoch},
                    ckpt / f'lstm_{run}_{scene}.pt')
 
-        test = load_split(args.data, scene, 'test', normalize=True)
-        pred = predict(model, test.obs.to(device)).cpu()      # [N, 12, 2]
-        rows.append({'scene': scene, 'samples': len(test), 'best_epoch': best_epoch,
-                     'ade': ade(pred, test.fut).mean().item(), 'fde': fde(pred, test.fut).mean().item()})
+        test = split_tensors(args, scene, 'test', device)
+        pred = predict(model, test).cpu()                     # [N, 12, 2]
+        test_fut = test['fut'].cpu()
+        rows.append({'scene': scene, 'samples': len(test_fut), 'best_epoch': best_epoch,
+                     'ade': ade(pred, test_fut).mean().item(), 'fde': fde(pred, test_fut).mean().item()})
         print(f'[{scene}] test ADE {rows[-1]["ade"]:.3f}  FDE {rows[-1]["fde"]:.3f}')
 
     with open(out / f'{run}_history.csv', 'w', newline='') as f:

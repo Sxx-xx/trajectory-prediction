@@ -1,0 +1,11 @@
+device: cuda  run: rotate_heading_social_seed0
+[hotel] train 29152  val 5136
+[hotel] epoch   1  train 0.3679  val 0.3267  val ADE 0.5159  *  (4.4s)
+[hotel] epoch   2  train 0.3272  val 0.3024  val ADE 0.4975  *  (4.0s)
+[hotel] epoch   3  train 0.3148  val 0.3255  val ADE 0.5092  (4.0s)
+[hotel] epoch   4  train 0.3084  val 0.2996  val ADE 0.4827  *  (4.0s)
+[hotel] epoch   5  train 0.2979  val 0.2966  val ADE 0.4696  *  (4.0s)
+[hotel] epoch   6  train 0.2892  val 0.3085  val ADE 0.4784  (4.1s)
+[hotel] epoch   7  train 0.2808  val 0.3052  val ADE 0.4797  (4.1s)
+[hotel] epoch   8  train 0.2716  val 0.3244  val ADE 0.4952  (4.0s)
+[hotel] test ADE 0.401  FDE 0.781

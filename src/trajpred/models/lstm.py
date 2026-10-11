@@ -21,6 +21,12 @@
                       정해지지 않으므로 돌리지 않는다.
     residual=True   : 디코더가 변위 자체 대신 '등속 변위(마지막 관측 변위)에 더할 보정량'을 낸다.
                       출력층을 0 으로 초기화하므로 학습 시작 시점의 예측은 등속 모델과 같다.
+    social=True     : 간단한 grid pooling. 관측 스텝마다 대상 보행자 중심의 grid_size x grid_size 격자
+                      (칸 cell m)에 같은 프레임 이웃을 넣고, 칸마다 (이웃 수, 평균 상대 속도 x, y) 를 센다.
+                      이 격자를 펼쳐 임베딩한 뒤 변위 임베딩과 이어 붙여 인코더에 넣는다.
+                      Social LSTM 처럼 이웃의 '은닉 상태'를 모으지 않고, 이웃의 위치 · 속도를 직접 쓴다.
+                      미래의 이웃 위치는 모르므로 디코더에는 넣지 않는다.
+                      heading frame 이면 격자 축도 대상의 진행 방향에 맞춰 돈다.
 """
 
 import torch
@@ -43,17 +49,49 @@ def heading_rotation(obs):
                         torch.stack([-sin, cos], -1)], -2)   # [N, 2, 2]
 
 
+def social_grid(nbr, nbr_mask, target_vel, grid_size, cell):
+    """이웃을 대상 보행자 중심 격자에 모은다.
+
+    nbr       : [N, T, K, 4]  이웃 상대 위치 (2), 이웃 속도 (2)
+    nbr_mask  : [N, T, K]     실제 이웃이면 True
+    target_vel: [N, T, 2]     대상 보행자의 같은 스텝 변위
+    반환      : [N, T, grid_size * grid_size * 3]  칸마다 (이웃 수, 평균 상대 속도 x, y)
+    """
+    n, t, k, _ = nbr.shape
+    half = grid_size * cell / 2
+    cell_xy = torch.floor((nbr[..., :2] + half) / cell).long()          # [N, T, K, 2] 칸 번호
+    inside = nbr_mask & (cell_xy >= 0).all(-1) & (cell_xy < grid_size).all(-1)   # [N, T, K]
+    flat = (cell_xy[..., 0] * grid_size + cell_xy[..., 1]).clamp(0, grid_size * grid_size - 1)
+    rel_vel = nbr[..., 2:] - target_vel[:, :, None, :]                  # [N, T, K, 2]
+    values = torch.cat([torch.ones_like(rel_vel[..., :1]), rel_vel], -1) * inside[..., None]  # [N, T, K, 3]
+    grid = torch.zeros(n, t, grid_size * grid_size, 3, device=nbr.device, dtype=nbr.dtype)
+    grid.scatter_add_(2, flat[..., None].expand(-1, -1, -1, 3), values)  # 같은 칸끼리 더한다
+    count = grid[..., :1]
+    grid = torch.cat([count, grid[..., 1:] / count.clamp_min(1)], -1)    # 속도는 칸 평균
+    return grid.reshape(n, t, -1)                                        # [N, T, G*G*3]
+
+
 class LSTMEncoderDecoder(nn.Module):
-    def __init__(self, pred_len=12, embed_dim=64, hidden_dim=128, frame='world', residual=False):
+    def __init__(self, pred_len=12, embed_dim=64, hidden_dim=128, frame='world', residual=False,
+                 social=False, grid_size=8, cell=0.75, social_dropout=0.0):
         super().__init__()
         if frame not in ('world', 'heading'):
             raise ValueError(f"frame 은 'world' | 'heading': {frame}")
         self.pred_len = pred_len
         self.frame = frame
         self.residual = residual
+        self.social = social
+        self.grid_size = grid_size
+        self.cell = cell
         # 변위 (2) -> 임베딩 (embed_dim). 인코더 · 디코더가 같은 임베딩을 쓴다.
         self.embed = nn.Sequential(nn.Linear(2, embed_dim), nn.ReLU())
-        self.encoder = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        encoder_in = embed_dim
+        if social:
+            # 펼친 격자 (G*G*3) -> 임베딩 (embed_dim)
+            self.social_embed = nn.Sequential(nn.Dropout(social_dropout),
+                                              nn.Linear(grid_size * grid_size * 3, embed_dim), nn.ReLU())
+            encoder_in = 2 * embed_dim
+        self.encoder = nn.LSTM(encoder_in, hidden_dim, batch_first=True)
         # 디코더는 한 스텝씩 돌리므로 LSTMCell 을 쓴다.
         self.decoder = nn.LSTMCell(embed_dim, hidden_dim)
         self.head = nn.Linear(hidden_dim, 2)     # 은닉 상태 -> 다음 변위 (residual 이면 보정량)
@@ -61,24 +99,37 @@ class LSTMEncoderDecoder(nn.Module):
             nn.init.zeros_(self.head.weight)     # 시작할 때 보정량 0 = 등속 모델
             nn.init.zeros_(self.head.bias)
 
-    def forward(self, obs):
+    def forward(self, obs, nbr=None, nbr_mask=None):
         """obs: [N, obs_len, 2] -> 예측 위치 [N, pred_len, 2]
 
         obs 는 절대 좌표든 상대 좌표든 상관없다. 변위만 쓰고, 마지막 관측점에 더해 위치로 돌린다.
+        social 이면 nbr [N, obs_len, K, 4], nbr_mask [N, obs_len, K] 가 필요하다 (TrajectoryDataset 참고).
         """
+        if self.social and nbr is None:
+            raise ValueError('social 모델은 nbr, nbr_mask 가 필요하다 (load_split(..., max_neighbors=K))')
         if self.frame == 'heading':
             last = obs[:, -1:, :]                             # [N, 1, 2]
             rot = heading_rotation(obs)                       # [N, 2, 2]
-            pred = self._predict((obs - last) @ rot.transpose(1, 2))   # 진행 방향 좌표에서 예측
+            rot_t = rot.transpose(1, 2)
+            if nbr is not None:
+                # 이웃의 상대 위치 · 속도도 같은 회전으로 돌린다 (둘 다 벡터라 평행이동은 없다)
+                n, t, k, _ = nbr.shape
+                nbr = (nbr.reshape(n, t * k * 2, 2) @ rot_t).reshape(n, t, k, 4)
+            pred = self._predict((obs - last) @ rot_t, nbr, nbr_mask)   # 진행 방향 좌표에서 예측
             return pred @ rot + last                          # 원래 좌표로: p @ (R^T)^-1 = p @ R
-        return self._predict(obs)
+        return self._predict(obs, nbr, nbr_mask)
 
-    def _predict(self, obs):
+    def _predict(self, obs, nbr=None, nbr_mask=None):
         """obs: [N, obs_len, 2] -> [N, pred_len, 2]. 좌표계 변환 없는 본체."""
         disp = obs[:, 1:] - obs[:, :-1]                     # [N, obs_len-1, 2]
 
         # 인코더
-        _, (h, c) = self.encoder(self.embed(disp))          # h, c: [1, N, hidden]
+        enc_in = self.embed(disp)                           # [N, obs_len-1, embed]
+        if self.social:
+            # 변위 d[t] = obs[t] - obs[t-1] 과 같은 시점 t = 1..obs_len-1 의 이웃을 쓴다
+            grid = social_grid(nbr[:, 1:], nbr_mask[:, 1:], disp, self.grid_size, self.cell)  # [N, obs_len-1, G*G*3]
+            enc_in = torch.cat([enc_in, self.social_embed(grid)], dim=-1)                    # [N, obs_len-1, 2*embed]
+        _, (h, c) = self.encoder(enc_in)                    # h, c: [1, N, hidden]
         h, c = h[0], c[0]                                   # [N, hidden]
 
         # 디코더: 자기 예측을 다음 입력으로
@@ -101,6 +152,8 @@ def load_lstm(path, device='cpu'):
     ckpt = torch.load(path, map_location=device)
     args = ckpt['args']
     model = LSTMEncoderDecoder(embed_dim=args['embed_dim'], hidden_dim=args['hidden_dim'],
-                               frame=args.get('frame', 'world'), residual=args.get('residual', False))
+                               frame=args.get('frame', 'world'), residual=args.get('residual', False),
+                               social=args.get('social', False), grid_size=args.get('grid_size', 8),
+                               cell=args.get('cell', 0.75), social_dropout=args.get('social_dropout', 0.0))
     model.load_state_dict(ckpt['state_dict'])
     return model.to(device).eval()

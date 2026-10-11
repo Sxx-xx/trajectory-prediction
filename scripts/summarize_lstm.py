@@ -26,6 +26,8 @@ CONDITIONS = [
     ('none_heading', 'heading'),
     ('none_residual', 'residual'),
     ('none_heading_residual', 'heading + residual'),
+    ('rotate_heading', 'heading + 회전 증강'),
+    ('rotate_heading_social_g4d5', '+ social pooling'),
 ]
 ROWS = SCENES + ['AVG']
 
@@ -64,7 +66,7 @@ def main():
         writer.writerow(['scene', 'condition', 'n_seeds', 'ade_mean', 'ade_std', 'fde_mean', 'fde_std'])
         for scene in ROWS:
             for condition in stats:
-                writer.writerow([scene, condition, len(args.seeds)] + [f'{v:.4f}' for v in stats[condition][scene]])
+                writer.writerow([scene, condition, len(args.seeds)] + [f'{v:.6f}' for v in stats[condition][scene]])
 
     labels = dict(CONDITIONS)
     for metric, col, cv_col in (('ADE', 0, 0), ('FDE', 2, 1)):

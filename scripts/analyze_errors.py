@@ -7,6 +7,7 @@
          마지막 관측 변위가 0.08 m(0.2 m/s) 미만이거나 4.8 s 동안 0.5 m 미만 움직이면
          방향이 정해지지 않으므로 'slow/undefined' 로 따로 묶는다
     3. 관측 속력(관측 8점의 평균 속력) 구간별 ADE
+    3b. 이웃 수별 ADE: 마지막 관측 프레임에서 3 m 안에 있는 다른 보행자 수 (그 프레임의 모든 보행자)
     4. 마지막 스텝 오차를 진행 방향 성분(along: +면 예측이 더 멀리 감)과 옆 성분(cross)으로 분해
     5. 이동 거리 반응: 4.8 s 동안의 예측 이동 거리를 등속 이동 거리(12 × 마지막 관측 변위)에
        직선 회귀한 기울기. 1 이면 관측 속도를 그대로 따르고, 1 보다 작으면 평균 쪽으로 줄인다
@@ -47,11 +48,16 @@ SLOW_STEP = 0.08          # m / 스텝 (= 0.2 m/s). 이보다 느리면 진행 �
 MIN_FUTURE_DIST = 0.5     # m. 4.8 s 동안 이보다 덜 움직이면 전환 각도를 정하지 않는다
 TURN_BINS = [('slow/undefined', None, None), ('0-15°', 0, 15), ('15-45°', 15, 45), ('45°+', 45, 181)]
 SPEED_BINS = [('<0.2 m/s', 0, 0.2), ('0.2-0.8', 0.2, 0.8), ('0.8-1.5', 0.8, 1.5), ('1.5+ m/s', 1.5, 99)]
+NEIGHBOR_RADIUS = 3.0     # m
+NEIGHBOR_BINS = [('0 (alone)', 0, 1), ('1-2', 1, 3), ('3-5', 3, 6), ('6+', 6, 999)]
+MAX_NEIGHBORS = 32        # scripts/train_lstm.py 기본값과 같게. 3 m 안 이웃이 이보다 많은 test 샘플은 없다
+BINS = {'turn': TURN_BINS, 'speed': SPEED_BINS, 'neighbors': NEIGHBOR_BINS}
 # 범주형 색 (고정 순서). 등속은 항상 첫 색이다.
 COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6']
 LABELS = {'cv': 'constant velocity', 'none': 'LSTM', 'rotate': 'LSTM + rotation aug',
           'none_heading': 'LSTM heading', 'none_residual': 'LSTM residual',
-          'none_heading_residual': 'LSTM heading + residual'}
+          'none_heading_residual': 'LSTM heading + residual',
+          'rotate_heading': 'LSTM heading + rot aug', 'rotate_heading_social_g4d5': 'Social (grid pooling)'}
 GRID_COLOR = '#e4e3df'
 
 
@@ -64,11 +70,12 @@ def scene_samples(root, scene, runs):
 
     반환 dict (N = 샘플 수)
         speed [N], turn [N] (정해지지 않으면 nan), heading [N, 2] (단위 벡터, 정지면 0)
+        neighbors [N]  마지막 관측 프레임에서 NEIGHBOR_RADIUS 안의 다른 보행자 수
         err   {모델: [N, 12]}  스텝별 거리 오차
         final {모델: [N, 2]}   마지막 스텝 오차 벡터 (예측 - 실제)
         end   {모델: [N, 2]}   마지막 예측점 (마지막 관측점 기준), 'gt' 는 실제 마지막 미래점
     """
-    ds = load_split(root, scene, 'test', normalize=True)
+    ds = load_split(root, scene, 'test', normalize=True, max_neighbors=MAX_NEIGHBORS)
     obs, fut = ds.obs, ds.fut                                         # [N, 8, 2], [N, 12, 2]
     models = {'cv': ConstantVelocity(pred_len=12)}
     models.update({run: load_lstm(f'checkpoints/lstm_{run}_{scene}.pt') for run in runs})
@@ -76,7 +83,7 @@ def scene_samples(root, scene, runs):
     out = {'err': {}, 'final': {}, 'end': {'gt': fut[:, -1].numpy()}}
     with torch.no_grad():
         for name, model in models.items():
-            pred = model(obs)                                         # [N, 12, 2]
+            pred = model(obs, ds.nbr, ds.nbr_mask) if getattr(model, 'social', False) else model(obs)  # [N, 12, 2]
             out['err'][name] = displacement(pred, fut).numpy()        # [N, 12]
             out['final'][name] = (pred[:, -1] - fut[:, -1]).numpy()   # [N, 2]
             out['end'][name] = pred[:, -1].numpy()                    # [N, 2]
@@ -92,17 +99,19 @@ def scene_samples(root, scene, runs):
     out['turn'] = torch.where(defined, turn, torch.full_like(turn, float('nan'))).numpy()
     out['heading'] = torch.where((v_norm >= SLOW_STEP)[:, None], v / v_norm.clamp_min(1e-9)[:, None],
                                  torch.zeros_like(v)).numpy()
+    near = ds.nbr_mask[:, -1] & (ds.nbr[:, -1, :, :2].norm(dim=-1) < NEIGHBOR_RADIUS)   # [N, K]
+    out['neighbors'] = near.sum(-1).numpy()                           # [N]
     out['n'] = len(ds)
     return out
 
 
 def bin_masks(sample, kind):
-    """kind: 'turn' | 'speed' -> [(이름, 마스크 [N])]"""
+    """kind: 'turn' | 'speed' | 'neighbors' -> [(이름, 마스크 [N])]"""
     if kind == 'turn':
         t = sample['turn']
         return [(name, np.isnan(t) if lo is None else (t >= lo) & (t < hi)) for name, lo, hi in TURN_BINS]
-    s = sample['speed']
-    return [(name, (s >= lo) & (s < hi)) for name, lo, hi in SPEED_BINS]
+    s = sample[kind]
+    return [(name, (s >= lo) & (s < hi)) for name, lo, hi in BINS[kind]]
 
 
 def weighted_mean(values, weights):
@@ -120,7 +129,7 @@ def aggregate_bins(data, names, kind):
     result = {}
     for group, members in groups(data).items():
         result[group] = {}
-        bins = [b[0] for b in (TURN_BINS if kind == 'turn' else SPEED_BINS)]
+        bins = [b[0] for b in BINS[kind]]
         for i, bin_name in enumerate(bins):
             masks = [bin_masks(sample, kind)[i][1] for sample, _ in members]
             weights = np.concatenate([m * w for m, (_, w) in zip(masks, members)])
@@ -199,7 +208,7 @@ def print_gap_decomposition(data, names):
     """hotel 에서 (LSTM ADE - 등속 ADE) 를 묶음별 기여로 나눈다. 기여 합 = 전체 차이."""
     hotel = data['hotel']
     n = hotel['n']
-    for kind, bins in (('speed', SPEED_BINS), ('turn', TURN_BINS)):
+    for kind in ('speed', 'turn', 'neighbors'):
         print(f'\n### hotel: ADE 차이(모델 - 등속) 의 {kind} 묶음별 기여 (m, 합 = 전체 차이)')
         print('| bin | 샘플 비율 | ' + ' | '.join(label_of(m) for m in names[1:]) + ' |')
         print('| :--- | --: |' + ' --: |' * (len(names) - 1))
@@ -346,7 +355,7 @@ def main():
     data = {scene: scene_samples(args.data, scene, args.runs) for scene in SCENES}
 
     steps = aggregate_steps(data, names)
-    bins_by_kind = {kind: aggregate_bins(data, names, kind) for kind in ('turn', 'speed')}
+    bins_by_kind = {kind: aggregate_bins(data, names, kind) for kind in BINS}
 
     print('### 스텝별 평균 오차 (m): step 1, 4, 8, 12 / 전체 평균(= ADE)')
     for group, curves in steps.items():
@@ -356,6 +365,7 @@ def main():
                   + f'  | ADE {c.mean():.3f}')
     print_bins('방향 전환 각도별', bins_by_kind['turn'], names)
     print_bins('관측 속력별', bins_by_kind['speed'], names)
+    print_bins(f'이웃 수별 ({NEIGHBOR_RADIUS:.0f} m 안)', bins_by_kind['neighbors'], names)
     print_gap_decomposition(data, names)
     print_along_cross(data, names)
     print_distance_response(data, names)
@@ -367,6 +377,8 @@ def main():
     plot_bins(bins_by_kind['turn'], names, 'heading change over the 4.8 s future',
               figures / f'{args.tag}_turn_ade.png')
     plot_bins(bins_by_kind['speed'], names, 'mean observed speed', figures / f'{args.tag}_speed_ade.png')
+    plot_bins(bins_by_kind['neighbors'], names, f'other pedestrians within {NEIGHBOR_RADIUS:.0f} m (last observed frame)',
+              figures / f'{args.tag}_neighbors_ade.png')
     save_csv(bins_by_kind, steps, names, out, args.tag, data)
     print(f'\nsaved {figures}/{args.tag}_*.png, {out}/{args.tag}_*.csv')
 

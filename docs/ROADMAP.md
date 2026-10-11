@@ -1,6 +1,6 @@
 # 로드맵
 
-지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석. 자세한 내용은 [README](../README.md)에 있다.
+지금까지 한 것: ETH/UCY 데이터 파이프라인(Social-GAN과 같은 샘플), ADE/FDE, 등속 모델 기준선, Vanilla LSTM encoder-decoder(증강 없음 · 회전 증강, 시드 3개), A단계 오차 분석, B단계 grid pooling. 자세한 내용은 [README](../README.md)에 있다.
 
 모든 단계에 공통으로 적용하는 규칙은 다음과 같다.
 
@@ -14,7 +14,7 @@
 | 단계 | 내용 | 상태 |
 | :-: | :--- | :--- |
 | A | 오차 분석: 오차 분해, heading 정규화, residual | 완료 ([분석](analysis.md), [노트](notes/A_analysis.md)) |
-| B | 상호작용: 주변 보행자 정보, Social Pooling 간단 버전 | 예정 |
+| B | 상호작용: 주변 보행자 정보, Social Pooling 간단 버전 | 완료 ([분석](interaction.md), [노트](notes/B_interaction.md)) |
 | C | Transformer: 시간축 + 보행자 간 attention | 예정 |
 | D | Multimodal: K=20 예측, best-of-20, 논문 표와 비교 | 예정 |
 | E | Argoverse 2로 차량 확장 | 예정 |
@@ -53,14 +53,21 @@
 3. Social Pooling 간단 버전: Social LSTM(Alahi et al., CVPR 2016)처럼 대상 보행자 주변 격자(예: 4×4, 칸 크기 0.5~1 m)에 이웃의 은닉 상태를 더해 넣는다. 먼저 인코더 끝에서 한 번만 pooling하는 버전으로 시작한다.
 4. A와 같은 오차 분해를 다시 돌려, 이웃이 가까운 샘플과 혼자인 샘플로 나눠 비교한다.
 
+**실제로 한 것** (2026-10-11, 요청 범위: heading + 회전 증강 기본, 이웃 위치 · 속도 grid pooling)
+
+- 1번 대신, 샘플마다 같은 프레임 이웃의 위치 · 속도를 미리 뽑아 두는 방식(`extract_neighbors`)을 썼다. 장면 배치 collate는 이웃의 **은닉 상태**를 모을 때 필요하므로 C단계로 미룬다.
+- 3번은 은닉 상태 대신 이웃의 위치 · 속도를 격자에 모으는 더 간단한 버전으로 했다.
+- 결과: 이웃 없는 모델과 같은 수준(AVG ADE 0.531). 15° 이상 꺾는 샘플에서도 개선이 없었다. 자세한 내용은 [interaction.md](interaction.md)에 있다.
+
 **완료 기준**
 
-- [ ] 장면 배치 데이터 로더와 그 테스트(샘플 수가 A와 같음)
-- [ ] 이웃 k명 기준선과 Social Pooling 모델 각각 시드 3개의 결과표
-- [ ] "이웃 거리별 ADE" 분석 그림 한 장 이상
-- [ ] `docs/notes/B_interaction.md`
+- [ ] 장면 배치 데이터 로더와 그 테스트 → C단계로 미룸
+- [ ] 이웃 k명 기준선 → 하지 않음. grid pooling만 시드 3개
+- [x] Social Pooling(grid pooling) 모델 시드 3개의 결과표, A단계 기준(각도 · 속력) 재분해
+- [x] 이웃 수별 ADE 분석 그림
+- [x] `docs/notes/B_interaction.md`
 
-**예상 소요**: 8~12시간
+**예상 소요**: 8~12시간. 실제로는 과적합 진단과 설정 비교(시드 0, 4개 설정)를 포함해 학습에 약 1시간이 걸렸다.
 
 ---
 
